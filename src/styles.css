@@ -1,0 +1,170 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  color-scheme: dark;
+  --perch-bg: #0b0d0c;
+  --perch-surface: #131615;
+  --perch-surface-2: #1a1f1c;
+  --perch-fg: #e8ede8;
+  --perch-muted: #8b948c;
+  --perch-subtle: #5e665f;
+  --perch-accent: #2ae87a;
+  --perch-accent-fg: #062012;
+  --perch-down: #e07068;
+  --perch-up: #2ae87a;
+  --perch-border: color-mix(in oklab, var(--perch-fg) 12%, transparent);
+  --perch-border-strong: color-mix(in oklab, var(--perch-fg) 22%, transparent);
+  --perch-shadow-border: 0 0 0 1px rgba(232, 237, 232, 0.08);
+  --perch-shadow-border-hover: 0 0 0 1px rgba(232, 237, 232, 0.14);
+}
+
+html.light,
+.light {
+  color-scheme: light;
+  --perch-bg: #f3f5f1;
+  --perch-surface: #ffffff;
+  --perch-surface-2: #e7ebe6;
+  --perch-fg: #141814;
+  --perch-muted: #5c635c;
+  --perch-subtle: #7a827a;
+  --perch-accent: #0c8a42;
+  --perch-accent-fg: #f3fff6;
+  --perch-down: #c4453c;
+  --perch-up: #0c8a42;
+  --perch-border: color-mix(in oklab, var(--perch-fg) 10%, transparent);
+  --perch-border-strong: color-mix(in oklab, var(--perch-fg) 18%, transparent);
+  --perch-shadow-border: 0 0 0 1px rgba(20, 24, 20, 0.1);
+  --perch-shadow-border-hover: 0 0 0 1px rgba(20, 24, 20, 0.18);
+}
+
+@theme {
+  --color-bg: var(--perch-bg);
+  --color-surface: var(--perch-surface);
+  --color-surface-2: var(--perch-surface-2);
+  --color-fg: var(--perch-fg);
+  --color-muted: var(--perch-muted);
+  --color-subtle: var(--perch-subtle);
+  --color-accent: var(--perch-accent);
+  --color-accent-fg: var(--perch-accent-fg);
+  --color-border: var(--perch-border);
+  --color-border-strong: var(--perch-border-strong);
+  --color-down: var(--perch-down);
+  --color-up: var(--perch-up);
+  --font-sans: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --shadow-border: var(--perch-shadow-border);
+  --shadow-border-hover: var(--perch-shadow-border-hover);
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100%;
+    background: var(--perch-bg);
+    color: var(--perch-fg);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 50%, transparent);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+.ticker-track {
+  animation: ticker 42s linear infinite;
+}
+
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.degen-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--perch-bg);
+}
+
+.degen-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--perch-accent);
+  transition: width 200ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+  }
+
+  .degen-bar > span {
+    transition: none;
+  }
+}
