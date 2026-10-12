@@ -178,7 +178,7 @@ async function setup({ wethUsesTransfer }) {
   await owner.writeContract({ address: weth, abi: mocks.MockToken.abi, functionName: "setUseTransfer", args: [wethUsesTransfer] });
   const router = await deploy(owner, mocks.MockRouter);
   const npm = await deploy(owner, mocks.MockNpm);
-  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router], parseEther("1"));
+  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router], parseEther("0.501"));
   const mkToken = async (honeypot = false) => {
     const t = await deploy(owner, mocks.MockToken);
     if (honeypot) {
@@ -212,8 +212,8 @@ describe("PerchDegen exit()", () => {
       assert.equal(r.status, "success");
       const after = await pub.getBalance({ address: owner.account.address });
       const gas = r.gasUsed * r.effectiveGasPrice;
-      // 1 ETH deposit minus the 0.001 ETH keeper stipend
-      assert.equal(after - before + gas, parseEther("0.999"));
+      // 0.501 ETH deposit minus the 0.001 ETH keeper stipend
+      assert.equal(after - before + gas, parseEther("0.5"));
       assert.equal(await t.tokenBal(t.weth, t.vault), 0n);
       assert.equal(await pub.getBalance({ address: t.vault }), 0n);
     });
@@ -227,7 +227,7 @@ describe("PerchDegen exit()", () => {
     const before = await pub.getBalance({ address: owner.account.address });
     const r = await t.send(owner, "exit");
     const after = await pub.getBalance({ address: owner.account.address });
-    assert.equal(after - before + r.gasUsed * r.effectiveGasPrice, parseEther("0.999"));
+    assert.equal(after - before + r.gasUsed * r.effectiveGasPrice, parseEther("0.5"));
     assert.equal(await t.read(t.vault, perch.abi, "tokenId"), 0n);
   });
 
@@ -239,8 +239,8 @@ describe("PerchDegen exit()", () => {
     const r = await t.send(owner, "exit");
     assert.equal(r.status, "success");
     const after = await pub.getBalance({ address: owner.account.address });
-    assert.equal(after - before + r.gasUsed * r.effectiveGasPrice, parseEther("0.4995"));
-    assert.equal(await t.tokenBal(hp, owner.account.address), parseEther("0.4995"));
+    assert.equal(after - before + r.gasUsed * r.effectiveGasPrice, parseEther("0.25"));
+    assert.equal(await t.tokenBal(hp, owner.account.address), parseEther("0.25"));
     assert.equal(await t.tokenBal(hp, t.vault), 0n);
   });
 
@@ -249,7 +249,7 @@ describe("PerchDegen exit()", () => {
     const token = await t.mkToken();
     await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, token, 1n, 1n) });
     await t.send(owner, "exitNoSwap");
-    assert.equal(await t.tokenBal(token, owner.account.address), parseEther("0.4995"));
+    assert.equal(await t.tokenBal(token, owner.account.address), parseEther("0.25"));
   });
 });
 
@@ -277,6 +277,25 @@ describe("PerchDegen access control and safety rails", () => {
     const next = await t.mkToken();
     await reverts(t.rebalance(operator, next, 0n, 1n), "minOutExit = 0");
     await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, next, 1n, 1n) });
+  });
+
+  it("enforces the launch deposit cap on arm and on top-ups", async () => {
+    const t = await setup({ wethUsesTransfer: false });
+    // already at the 0.5 ETH cap: any top-up reverts
+    await reverts(
+      owner.writeContract({ address: t.vault, abi: perch.abi, functionName: "deposit", value: 1n, gas: 1_000_000n }),
+      "top-up over cap",
+    );
+    // arming with more than the cap reverts
+    await assert.rejects(
+      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.6")),
+    );
+    // a smaller vault can top up until it reaches the cap, not past it
+    const small = await deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.101"));
+    const top = (value) =>
+      owner.writeContract({ address: small, abi: perch.abi, functionName: "deposit", value, gas: 1_000_000n });
+    await pub.waitForTransactionReceipt({ hash: await top(parseEther("0.4")) });
+    await reverts(top(1n), "past the cap");
   });
 
   it("rebalance rejects non-standard fee tiers and non-WETH pairs", async () => {

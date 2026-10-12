@@ -18,6 +18,8 @@ import { rangeFromPreset, sortedTokens } from "./uniswap-lp";
 
 export const OPERATOR_STIPEND = parseEther("0.001");
 export const SLIPPAGE_BPS = 100n;
+/** Must match PerchDegen.MAX_DEPOSIT (the contract is what actually enforces it). */
+export const MAX_ARM_ETH = 0.5;
 
 export const robinhoodChain = {
   id: ROBINHOOD_CHAIN_ID,

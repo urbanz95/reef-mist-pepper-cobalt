@@ -8,13 +8,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   confirmDegenArm,
+  getArmStatus,
   getDegenVault,
   getKeeperAddress,
   setDegenActive,
   type DegenVaultDTO,
 } from "@/lib/degen-api";
 import { degenAuthMessage } from "@/lib/degen-auth";
-import { degenChainOk, deployValueWei, encodeDeployDegen, encodeExit } from "@/lib/degen-chain";
+import {
+  MAX_ARM_ETH,
+  degenChainOk,
+  deployValueWei,
+  encodeDeployDegen,
+  encodeExit,
+} from "@/lib/degen-chain";
 import {
   HOLD_OPTIONS,
   degenPnlUsd,
@@ -198,11 +205,18 @@ export function DegenView() {
         toast.error("Minimum 0.05 ETH on-chain (includes keeper gas).");
         return;
       }
+      if (amount > MAX_ARM_ETH) {
+        toast.error(`Launch cap: ${MAX_ARM_ETH} ETH per vault.`);
+        return;
+      }
       if (!isRobinhoodChain(useWallet.getState().chainId)) {
         await useWallet.getState().switchChain();
       }
       setBusy(true);
       try {
+        const status = await getArmStatus({ data: address });
+        if (!status.allowed) throw new Error("Closed beta: this wallet is not on the allowlist yet.");
+        if (status.paused) throw new Error("The keeper is paused for maintenance. Try again later.");
         const keeper = await getKeeperAddress();
         const value = deployValueWei(amount);
         toast.message("Confirm in your wallet. One signature. Then the keeper hops on-chain.");

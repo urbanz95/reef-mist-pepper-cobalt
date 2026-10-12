@@ -70,6 +70,9 @@ interface INpm {
 ///         rescueToken, rescueNft) never depend on a swap succeeding.
 contract PerchDegen {
     uint256 public constant STIPEND = 0.001 ether;
+    /// @notice Launch cap on the total ETH ever deposited into one vault (stipend
+    ///         excluded). Bounds what a compromised keeper can ever put at risk.
+    uint256 public constant MAX_DEPOSIT = 0.5 ether;
 
     address public immutable owner;
     address public operator;
@@ -77,6 +80,7 @@ contract PerchDegen {
     INpm public immutable npm;
     ISwapRouter public immutable router;
 
+    uint256 public deposited;
     uint256 public tokenId;
     address public token0;
     address public token1;
@@ -92,6 +96,7 @@ contract PerchDegen {
     error NotOwner();
     error NotOperator();
     error BadValue();
+    error CapExceeded();
     error NeedWeth();
     error SwapFailed();
     error Reentrancy();
@@ -123,6 +128,8 @@ contract PerchDegen {
         (bool ok, ) = operator_.call{value: STIPEND}("");
         if (!ok) revert BadValue();
         uint256 rest = msg.value - STIPEND;
+        if (rest > MAX_DEPOSIT) revert CapExceeded();
+        deposited = rest;
         weth.deposit{value: rest}();
         emit Armed(msg.sender, operator_, rest);
     }
@@ -138,6 +145,8 @@ contract PerchDegen {
 
     function deposit() external payable onlyOwner {
         if (msg.value == 0) revert BadValue();
+        if (deposited + msg.value > MAX_DEPOSIT) revert CapExceeded();
+        deposited += msg.value;
         weth.deposit{value: msg.value}();
     }
 

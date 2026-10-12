@@ -56,6 +56,19 @@ export const getKeeperAddress = createServerFn({ method: "GET" }).handler(async 
   return getKeeperPublic();
 });
 
+/** Checked by the UI BEFORE the user signs the deploy, so nobody funds a vault we will not manage. */
+export const getArmStatus = createServerFn({ method: "POST" })
+  .validator((raw: unknown) => {
+    const owner = typeof raw === "string" ? raw : "";
+    if (!isAddress(owner)) throw new Error("A valid owner address is required.");
+    return owner;
+  })
+  .handler(async ({ data: owner }) => {
+    const { armAllowed, keeperPaused } = await import("./keeper.server");
+    const { MAX_ARM_ETH } = await import("./degen-chain");
+    return { allowed: armAllowed(owner), paused: keeperPaused(), maxEth: MAX_ARM_ETH };
+  });
+
 export const confirmDegenArm = createServerFn({ method: "POST" })
   .validator((raw: unknown) => {
     const v = raw as {

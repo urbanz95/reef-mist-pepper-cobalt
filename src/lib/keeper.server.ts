@@ -36,6 +36,22 @@ const g = globalThis as typeof globalThis & {
   __perchVaultLocks__?: Set<string>;
 };
 
+/** Emergency stop: KEEPER_PAUSED=1 halts all hops (owners can still exit on-chain). */
+export function keeperPaused() {
+  return env("KEEPER_PAUSED") === "1";
+}
+
+/** Closed beta: when ARM_ALLOWLIST is set (comma separated), only those wallets can arm. */
+export function armAllowed(owner: string) {
+  const list = env("ARM_ALLOWLIST");
+  if (!list) return true;
+  return list
+    .split(",")
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(owner.toLowerCase());
+}
+
 export const MIN_HOLD_MS = 60_000;
 export const MAX_HOLD_MS = 24 * 60 * 60_000;
 const UNIVERSES: readonly DegenUniverse[] = ["meme", "all", "stock"];
@@ -99,6 +115,7 @@ export async function confirmFromTx(input: {
   holdMs: number;
 }) {
   if (!isAddress(input.owner)) throw new Error("Invalid owner address.");
+  if (!armAllowed(input.owner)) throw new Error("This wallet is not on the beta allowlist.");
   const universe = UNIVERSES.includes(input.universe) ? input.universe : "meme";
   const holdMs = Math.min(MAX_HOLD_MS, Math.max(MIN_HOLD_MS, Math.round(Number(input.holdMs)) || 0));
 
@@ -234,6 +251,7 @@ function serialize(row: VaultRow) {
 async function tickVault(vault: string) {
   const locks = (g.__perchVaultLocks__ ??= new Set<string>());
   const key = vault.toLowerCase();
+  if (keeperPaused()) return;
   if (locks.has(key)) return; // a hop for this vault is already in flight
   locks.add(key);
   try {
