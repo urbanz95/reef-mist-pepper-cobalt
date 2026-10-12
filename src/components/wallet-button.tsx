@@ -3,10 +3,10 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
 import { formatAddress } from "@/lib/format";
-import { isRobinhoodChain, useWallet } from "@/lib/wallet-store";
+import { isRobinhoodChain, useWallet, walletConnectReady } from "@/lib/wallet-store";
 
 export function WalletButton() {
-  const { address, connecting, connect, disconnect, enableDemo, demo, chainId, error } =
+  const { address, connecting, connect, connectInjected, disconnect, enableDemo, demo, chainId, error, hasBrowserWallet } =
     useWallet();
   const [open, setOpen] = useState(false);
 
@@ -50,20 +50,29 @@ export function WalletButton() {
           Connect
         </Button>
       </DialogTrigger>
-      <DialogContent title="Connect with WalletConnect">
+      <DialogContent title="Connect a wallet">
         <p className="mb-4 text-sm text-muted">
-          Scan the QR in your wallet (Rainbow, MetaMask mobile, Rabby…). No injected
-          browser extension. Each wallet gets its own vault.
+          The gray WalletConnect box is an empty QR. That public project id is rejected, so no code is generated.
         </p>
         <div className="flex flex-col gap-2">
           <Button
             onClick={async () => {
-              await connect();
+              await connectInjected();
               if (useWallet.getState().address) setOpen(false);
             }}
             disabled={connecting}
           >
-            {connecting ? "Opening WalletConnect…" : "WalletConnect"}
+            {connecting ? "Waiting for the wallet…" : hasBrowserWallet ? "Browser wallet" : "Browser wallet (MetaMask / Rabby)"}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={async () => {
+              await connect();
+              if (useWallet.getState().address) setOpen(false);
+            }}
+            disabled={connecting || !walletConnectReady}
+          >
+            {walletConnectReady ? "WalletConnect" : "WalletConnect unavailable"}
           </Button>
           <Button
             variant="secondary"
@@ -75,6 +84,11 @@ export function WalletButton() {
             Continue in demo mode
           </Button>
         </div>
+        {!walletConnectReady ? (
+          <p className="mt-3 text-xs text-subtle">
+            Phone QR needs your own project id in VITE_WC_PROJECT_ID from dashboard.reown.com. Until then, use the browser wallet.
+          </p>
+        ) : null}
         {error ? <p className="mt-3 text-sm text-down">{error}</p> : null}
       </DialogContent>
     </Dialog>
