@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DegenRouteImport } from './routes/degen'
 import { Route as PositionsRouteImport } from './routes/positions'
 import { Route as PoolPoolIdRouteImport } from './routes/pool.$poolId'
+import { Route as ApiDegenStatusRouteImport } from './routes/api.degen.status'
 import { Route as ApiDegenTickRouteImport } from './routes/api.degen.tick'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +36,11 @@ const PoolPoolIdRoute = PoolPoolIdRouteImport.update({
   path: '/pool/$poolId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDegenStatusRoute = ApiDegenStatusRouteImport.update({
+  id: '/api/degen/status',
+  path: '/api/degen/status',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDegenTickRoute = ApiDegenTickRouteImport.update({
   id: '/api/degen/tick',
   path: '/api/degen/tick',
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/degen': typeof DegenRoute
   '/positions': typeof PositionsRoute
   '/pool/$poolId': typeof PoolPoolIdRoute
+  '/api/degen/status': typeof ApiDegenStatusRoute
   '/api/degen/tick': typeof ApiDegenTickRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/degen': typeof DegenRoute
   '/positions': typeof PositionsRoute
   '/pool/$poolId': typeof PoolPoolIdRoute
+  '/api/degen/status': typeof ApiDegenStatusRoute
   '/api/degen/tick': typeof ApiDegenTickRoute
 }
 export interface FileRoutesById {
@@ -61,19 +69,33 @@ export interface FileRoutesById {
   '/degen': typeof DegenRoute
   '/positions': typeof PositionsRoute
   '/pool/$poolId': typeof PoolPoolIdRoute
+  '/api/degen/status': typeof ApiDegenStatusRoute
   '/api/degen/tick': typeof ApiDegenTickRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/degen' | '/positions' | '/pool/$poolId' | '/api/degen/tick'
+  fullPaths:
+    | '/'
+    | '/degen'
+    | '/positions'
+    | '/pool/$poolId'
+    | '/api/degen/status'
+    | '/api/degen/tick'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/degen' | '/positions' | '/pool/$poolId' | '/api/degen/tick'
+  to:
+    | '/'
+    | '/degen'
+    | '/positions'
+    | '/pool/$poolId'
+    | '/api/degen/status'
+    | '/api/degen/tick'
   id:
     | '__root__'
     | '/'
     | '/degen'
     | '/positions'
     | '/pool/$poolId'
+    | '/api/degen/status'
     | '/api/degen/tick'
   fileRoutesById: FileRoutesById
 }
@@ -82,6 +104,7 @@ export interface RootRouteChildren {
   DegenRoute: typeof DegenRoute
   PositionsRoute: typeof PositionsRoute
   PoolPoolIdRoute: typeof PoolPoolIdRoute
+  ApiDegenStatusRoute: typeof ApiDegenStatusRoute
   ApiDegenTickRoute: typeof ApiDegenTickRoute
 }
 
@@ -115,6 +138,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PoolPoolIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/degen/status': {
+      id: '/api/degen/status'
+      path: '/api/degen/status'
+      fullPath: '/api/degen/status'
+      preLoaderRoute: typeof ApiDegenStatusRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/degen/tick': {
       id: '/api/degen/tick'
       path: '/api/degen/tick'
@@ -130,6 +160,7 @@ const rootRouteChildren: RootRouteChildren = {
   DegenRoute: DegenRoute,
   PositionsRoute: PositionsRoute,
   PoolPoolIdRoute: PoolPoolIdRoute,
+  ApiDegenStatusRoute: ApiDegenStatusRoute,
   ApiDegenTickRoute: ApiDegenTickRoute,
 }
 export const routeTree = rootRouteImport

@@ -62,6 +62,10 @@ async function ensure() {
     id integer primary key,
     private_key text not null
   )`);
+  await sql.query(`create table if not exists degen_heartbeat (
+    id integer primary key,
+    at bigint not null
+  )`);
   await sql.query(`create table if not exists degen_vaults (
     vault text primary key,
     owner text not null,
@@ -352,6 +356,11 @@ export async function tickAllVaults() {
   g.__perchKeeperBusy__ = true;
   try {
     const sql = await ensure();
+    // Proof that the scheduler is calling us, even with zero vaults (shown on /api/degen/status).
+    await sql.query(
+      "insert into degen_heartbeat (id, at) values (1, $1) on conflict (id) do update set at = excluded.at",
+      [Date.now()],
+    );
     const rows = await sql.query<VaultRow>("select * from degen_vaults where active = true");
     for (const row of rows) {
       try {
@@ -367,6 +376,19 @@ export async function tickAllVaults() {
   } finally {
     g.__perchKeeperBusy__ = false;
   }
+}
+
+export async function keeperStats() {
+  const sql = await ensure();
+  const vaults = await sql.query<{ active: number | string; total: number | string }>(
+    "select count(*) filter (where active) as active, count(*) as total from degen_vaults",
+  );
+  const beat = await sql.query<{ at: number | string }>("select at from degen_heartbeat where id = 1");
+  return {
+    activeVaults: Number(vaults[0]?.active ?? 0),
+    totalVaults: Number(vaults[0]?.total ?? 0),
+    lastTickAt: beat[0] ? Number(beat[0].at) : null,
+  };
 }
 
 export function startKeeperLoop() {
