@@ -1,8 +1,17 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "viem";
-import { env } from "./env.server";
+import { verifyMessage, type Hex } from "viem";
+import { env, isWorkspacePreview } from "./env.server";
 import { getSql } from "./db";
-import { operatorRebalance, verifyVault, waitArmReceipt } from "./degen-chain";
+import {
+  VaultEmptyError,
+  encodeDeployDegen,
+  operatorRebalance,
+  publicClient,
+  readVault,
+  verifyVault,
+  waitArmReceipt,
+} from "./degen-chain";
+import { authFresh, degenAuthMessage, isAddress, type DegenAuth } from "./degen-auth";
 import { planHunt, rankForHunt } from "./degen-logic";
 import { huntApr, type DegenUniverse, type Pool } from "./pools";
 
@@ -24,7 +33,12 @@ export type VaultRow = {
 const g = globalThis as typeof globalThis & {
   __perchKeeperTimer__?: ReturnType<typeof setInterval>;
   __perchKeeperBusy__?: boolean;
+  __perchVaultLocks__?: Set<string>;
 };
+
+export const MIN_HOLD_MS = 60_000;
+export const MAX_HOLD_MS = 24 * 60 * 60_000;
+const UNIVERSES: readonly DegenUniverse[] = ["meme", "all", "stock"];
 
 async function ensure() {
   const sql = await getSql();
@@ -56,6 +70,11 @@ export async function getKeeperAccount() {
     const pk = envPk as Hex;
     return { pk, account: privateKeyToAccount(pk) };
   }
+  if (!isWorkspacePreview()) {
+    // A key generated into the database would sit next to the app data in
+    // plaintext and control every vault. Production must inject it.
+    throw new Error("KEEPER_PRIVATE_KEY is required when the app is deployed.");
+  }
   const sql = await ensure();
   const rows = await sql.query<{ private_key: string }>(
     "select private_key from degen_keeper where id = 1",
@@ -78,52 +97,61 @@ export async function confirmFromTx(input: {
   owner: string;
   universe: DegenUniverse;
   holdMs: number;
-  eth: number;
 }) {
-  const { vault, from } = await waitArmReceipt(input.hash as Hex);
+  if (!isAddress(input.owner)) throw new Error("Invalid owner address.");
+  const universe = UNIVERSES.includes(input.universe) ? input.universe : "meme";
+  const holdMs = Math.min(MAX_HOLD_MS, Math.max(MIN_HOLD_MS, Math.round(Number(input.holdMs)) || 0));
+
+  const { vault, from, input: deployData, to } = await waitArmReceipt(input.hash as Hex);
+  if (to) throw new Error("This transaction is not a vault deployment.");
   if (from.toLowerCase() !== input.owner.toLowerCase()) {
     throw new Error("This transaction did not come from this wallet.");
   }
   const { account } = await getKeeperAccount();
+  // The deployment must be byte-for-byte the Perch vault wired to THIS keeper.
+  // Otherwise anyone could register a fake contract and make the keeper pay gas on it.
+  if (deployData.toLowerCase() !== encodeDeployDegen(account.address).toLowerCase()) {
+    throw new Error("This is not a Perch vault deployment.");
+  }
   await verifyVault(vault, input.owner, account.address);
-  return registerVault({
-    vault,
-    owner: input.owner,
-    universe: input.universe,
-    holdMs: input.holdMs,
-    eth: input.eth,
-  });
+
+  // Already registered: never touch its state. Re-submitting a public tx hash
+  // must not reset a running vault.
+  const existing = await getVaultByAddress(vault);
+  if (existing) return serialize(existing);
+
+  const on = await readVault(vault);
+  return registerVault({ vault, owner: input.owner, universe, holdMs, eth: on.eth });
 }
 
-export async function registerVault(input: {
+async function getVaultByAddress(vault: string) {
+  const sql = await ensure();
+  const rows = await sql.query<VaultRow>("select * from degen_vaults where vault = $1", [
+    vault.toLowerCase(),
+  ]);
+  return rows[0] ?? null;
+}
+
+async function registerVault(input: {
   vault: string;
   owner: string;
   universe: DegenUniverse;
   holdMs: number;
   eth: number;
-  currentPoolId?: string | null;
 }) {
   const sql = await ensure();
   const now = Date.now();
   await sql.query(
     `insert into degen_vaults
       (vault, owner, universe, hold_ms, active, eth, current_pool_id, hops_json, entered_at, last_tick, updated_at)
-     values ($1,$2,$3,$4,true,$5,$6,'[]',$7,$7,$7)
-     on conflict (vault) do update set
-       owner = excluded.owner,
-       universe = excluded.universe,
-       hold_ms = excluded.hold_ms,
-       active = true,
-       eth = excluded.eth,
-       current_pool_id = excluded.current_pool_id,
-       updated_at = excluded.updated_at`,
+     values ($1,$2,$3,$4,true,$5,null,'[]',$6,$6,$6)
+     on conflict (vault) do nothing`,
     [
       input.vault.toLowerCase(),
       input.owner.toLowerCase(),
       input.universe,
       input.holdMs,
       input.eth,
-      input.currentPoolId ?? null,
       now,
     ],
   );
@@ -136,13 +164,37 @@ export async function registerVault(input: {
   return getVaultByOwner(input.owner);
 }
 
-export async function setVaultActive(owner: string, active: boolean) {
+/** Owner proof: a personal_sign (EIP-191, or EIP-1271 for contract wallets) over a fresh message. */
+async function assertOwnerSigned(owner: string, action: "pause" | "resume", auth: DegenAuth) {
+  if (!authFresh(auth.timestamp)) throw new Error("The signature expired. Sign again.");
+  const params = {
+    address: owner as `0x${string}`,
+    message: degenAuthMessage(action, owner, auth.timestamp),
+    signature: auth.signature,
+  };
+  // Plain wallets: verify locally. Smart-contract wallets: ask the chain (EIP-1271).
+  let ok = await verifyMessage(params).catch(() => false);
+  if (!ok) ok = await publicClient().verifyMessage(params).catch(() => false);
+  if (!ok) throw new Error("The signature does not match this wallet.");
+}
+
+export async function setVaultActive(owner: string, active: boolean, auth: DegenAuth) {
+  if (!isAddress(owner)) throw new Error("Invalid owner address.");
+  await assertOwnerSigned(owner, active ? "resume" : "pause", auth);
   const sql = await ensure();
   await sql.query(
     "update degen_vaults set active = $1, challenger_id = null, challenger_since = null, updated_at = $2 where owner = $3",
     [active, Date.now(), owner.toLowerCase()],
   );
   return getVaultByOwner(owner);
+}
+
+async function deactivate(vault: string) {
+  const sql = await ensure();
+  await sql.query(
+    "update degen_vaults set active = false, challenger_id = null, challenger_since = null, updated_at = $1 where vault = $2",
+    [Date.now(), vault.toLowerCase()],
+  );
 }
 
 export async function getVaultByOwner(owner: string) {
@@ -180,6 +232,24 @@ function serialize(row: VaultRow) {
 }
 
 async function tickVault(vault: string) {
+  const locks = (g.__perchVaultLocks__ ??= new Set<string>());
+  const key = vault.toLowerCase();
+  if (locks.has(key)) return; // a hop for this vault is already in flight
+  locks.add(key);
+  try {
+    await tickVaultLocked(key);
+  } catch (err) {
+    if (err instanceof VaultEmptyError) {
+      await deactivate(key);
+      return;
+    }
+    throw err;
+  } finally {
+    locks.delete(key);
+  }
+}
+
+async function tickVaultLocked(vault: string) {
   const sql = await ensure();
   const rows = await sql.query<VaultRow>("select * from degen_vaults where vault = $1", [
     vault.toLowerCase(),

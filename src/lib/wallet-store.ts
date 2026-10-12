@@ -67,6 +67,7 @@ type WalletState = {
   enableDemo: () => void;
   switchChain: () => Promise<void>;
   sendTx: (tx: TxRequest) => Promise<string>;
+  signMessage: (message: string) => Promise<string>;
   waitReceipt: (hash: string) => Promise<TxReceipt>;
   ethCall: (to: string, data: string) => Promise<string>;
   getCode: (address: string) => Promise<string>;
@@ -165,6 +166,14 @@ export const useWallet = create<WalletState>((set, get) => ({
       method: "eth_sendTransaction",
       params: [params],
     })) as string;
+  },
+
+  signMessage: async (message) => {
+    const p = await wc();
+    const { address } = get();
+    if (!address) throw new Error("Wallet not connected");
+    const hex = `0x${Array.from(new TextEncoder().encode(message), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+    return (await p.request({ method: "personal_sign", params: [hex, address] })) as string;
   },
 
   waitReceipt: async (hash) => {

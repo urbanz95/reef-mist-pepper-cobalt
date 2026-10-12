@@ -13,6 +13,7 @@ import {
   setDegenActive,
   type DegenVaultDTO,
 } from "@/lib/degen-api";
+import { degenAuthMessage } from "@/lib/degen-auth";
 import { degenChainOk, deployValueWei, encodeDeployDegen, encodeExit } from "@/lib/degen-chain";
 import {
   HOLD_OPTIONS,
@@ -98,6 +99,7 @@ export function DegenView() {
   const connect = useWallet((s) => s.connect);
   const sendTx = useWallet((s) => s.sendTx);
   const waitReceipt = useWallet((s) => s.waitReceipt);
+  const signMessage = useWallet((s) => s.signMessage);
   const demo = useWallet((s) => s.demo);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
@@ -155,15 +157,30 @@ export function DegenView() {
     challenger && challengerSince ? Math.max(0, holdMs - (now - challengerSince)) : holdMs;
   const holdPct = challenger && challengerSince ? Math.min(100, ((now - challengerSince) / holdMs) * 100) : 0;
 
+  /** Pause/resume is owner-only: the server checks a wallet signature (no gas, no funds move). */
+  async function setActiveSigned(owner: string, nextActive: boolean) {
+    const timestamp = Date.now();
+    const signature = await signMessage(
+      degenAuthMessage(nextActive ? "resume" : "pause", owner, timestamp),
+    );
+    return setDegenActive({
+      data: { owner, active: nextActive, auth: { signature: signature as `0x${string}`, timestamp } },
+    });
+  }
+
   async function onArm() {
     if (paused) {
-      if (address && onchain) {
-        const row = await setDegenActive({ data: { owner: address, active: true } });
-        if (row) applyServer({ ...row, hops: hopsFrom(row) });
-      } else {
-        resume();
+      try {
+        if (address && onchain) {
+          const row = await setActiveSigned(address, true);
+          if (row) applyServer({ ...row, hops: hopsFrom(row) });
+        } else {
+          resume();
+        }
+        toast.success("Hunter resumed. The keeper hops 24/7.");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Resume rejected");
       }
-      toast.success("Hunter resumed. The keeper hops 24/7.");
       return;
     }
     const amount = Number(depositInput.replace(",", "."));
@@ -201,7 +218,6 @@ export function DegenView() {
             owner: address,
             universe,
             holdMs,
-            eth: amount,
           },
         });
         if (row) applyServer({ ...row, hops: hopsFrom(row) });
@@ -227,11 +243,15 @@ export function DegenView() {
     toast.success(`Demo: first stop ${hop.toPair} · APR ${formatApr(hop.toApr)}`);
   }
 
-  function onStop() {
+  async function onStop() {
     if (address && onchain) {
-      void setDegenActive({ data: { owner: address, active: false } }).then((row) => {
+      try {
+        const row = await setActiveSigned(address, false);
         if (row) applyServer({ ...row, hops: hopsFrom(row) });
-      });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Pause rejected");
+        return; // keeper still running: do not pretend it stopped
+      }
     }
     stop(pools);
     toast.message("Hunter stopped. Liquidity stays in the last pool.");
@@ -250,7 +270,7 @@ export function DegenView() {
       toast.message("Withdrawing to your wallet. Only you sign.");
       const hash = await sendTx({ to: vault, data: encodeExit() });
       await waitReceipt(hash);
-      await setDegenActive({ data: { owner: address, active: false } });
+      // No signature needed here: the keeper sees the vault is empty and stops by itself.
       stop(pools);
       toast.success("ETH is on the way to your wallet.");
     } catch (err) {

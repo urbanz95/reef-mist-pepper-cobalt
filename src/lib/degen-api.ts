@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { DegenUniverse } from "./pools";
+import { isAddress, isTxHash, type DegenAuth } from "./degen-auth";
 
 export type DegenVaultDTO = {
   vault: string;
@@ -62,15 +63,14 @@ export const confirmDegenArm = createServerFn({ method: "POST" })
       owner?: string;
       universe?: DegenUniverse;
       holdMs?: number;
-      eth?: number;
     };
-    if (!v?.hash || !v?.owner) throw new Error("hash and owner are required");
+    if (!isTxHash(v?.hash)) throw new Error("A valid transaction hash is required.");
+    if (!isAddress(v?.owner)) throw new Error("A valid owner address is required.");
     return {
-      hash: String(v.hash),
-      owner: String(v.owner),
+      hash: v.hash,
+      owner: v.owner,
       universe: (v.universe ?? "meme") as DegenUniverse,
       holdMs: Number(v.holdMs ?? 120_000),
-      eth: Number(v.eth ?? 0),
     };
   })
   .handler(async ({ data }) => {
@@ -80,19 +80,28 @@ export const confirmDegenArm = createServerFn({ method: "POST" })
 
 export const setDegenActive = createServerFn({ method: "POST" })
   .validator((raw: unknown) => {
-    const v = raw as { owner?: string; active?: boolean };
-    if (!v?.owner) throw new Error("owner is required");
-    return { owner: String(v.owner), active: Boolean(v.active) };
+    const v = raw as { owner?: string; active?: boolean; auth?: DegenAuth };
+    if (!isAddress(v?.owner)) throw new Error("A valid owner address is required.");
+    const sig = v.auth?.signature;
+    if (typeof sig !== "string" || !/^0x[0-9a-fA-F]+$/.test(sig) || sig.length > 4096) {
+      throw new Error("A wallet signature is required.");
+    }
+    if (!Number.isFinite(Number(v.auth?.timestamp))) throw new Error("A wallet signature is required.");
+    return {
+      owner: v.owner,
+      active: Boolean(v.active),
+      auth: { signature: sig as `0x${string}`, timestamp: Number(v.auth?.timestamp) },
+    };
   })
   .handler(async ({ data }) => {
     const { setVaultActive } = await import("./keeper.server");
-    return asDto(await setVaultActive(data.owner, data.active));
+    return asDto(await setVaultActive(data.owner, data.active, data.auth));
   });
 
 export const getDegenVault = createServerFn({ method: "POST" })
   .validator((raw: unknown) => {
-    if (typeof raw === "string") return raw;
-    return String((raw as { owner?: string })?.owner || "");
+    const owner = typeof raw === "string" ? raw : String((raw as { owner?: string })?.owner || "");
+    return isAddress(owner) ? owner : "";
   })
   .handler(async ({ data: owner }) => {
     if (!owner) return null;
