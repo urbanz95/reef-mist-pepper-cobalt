@@ -12,19 +12,16 @@ import {
   waitArmReceipt,
 } from "./degen-chain";
 import { authFresh, degenAuthMessage, isAddress, type DegenAuth } from "./degen-auth";
-import { planHunt, rankForHunt } from "./degen-logic";
+import { CHECK_INTERVAL_MS, pickHop, rankForHunt } from "./degen-logic";
 import { huntApr, type DegenUniverse, type Pool } from "./pools";
 
 export type VaultRow = {
   vault: string;
   owner: string;
   universe: DegenUniverse;
-  hold_ms: number;
   active: boolean;
   eth: number;
   current_pool_id: string | null;
-  challenger_id: string | null;
-  challenger_since: number | null;
   last_tick: number | null;
   entered_at: number | null;
   hops_json: string;
@@ -52,8 +49,6 @@ export function armAllowed(owner: string) {
     .includes(owner.toLowerCase());
 }
 
-export const MIN_HOLD_MS = 60_000;
-export const MAX_HOLD_MS = 24 * 60 * 60_000;
 const UNIVERSES: readonly DegenUniverse[] = ["meme", "all", "stock"];
 
 async function ensure() {
@@ -116,12 +111,10 @@ export async function confirmFromTx(input: {
   hash: string;
   owner: string;
   universe: DegenUniverse;
-  holdMs: number;
 }) {
   if (!isAddress(input.owner)) throw new Error("Invalid owner address.");
   if (!armAllowed(input.owner)) throw new Error("This wallet is not on the beta allowlist.");
   const universe = UNIVERSES.includes(input.universe) ? input.universe : "meme";
-  const holdMs = Math.min(MAX_HOLD_MS, Math.max(MIN_HOLD_MS, Math.round(Number(input.holdMs)) || 0));
 
   const { vault, from, input: deployData, to } = await waitArmReceipt(input.hash as Hex);
   if (to) throw new Error("This transaction is not a vault deployment.");
@@ -142,7 +135,7 @@ export async function confirmFromTx(input: {
   if (existing) return serialize(existing);
 
   const on = await readVault(vault);
-  return registerVault({ vault, owner: input.owner, universe, holdMs, eth: on.eth });
+  return registerVault({ vault, owner: input.owner, universe, eth: on.eth });
 }
 
 async function getVaultByAddress(vault: string) {
@@ -157,21 +150,19 @@ async function registerVault(input: {
   vault: string;
   owner: string;
   universe: DegenUniverse;
-  holdMs: number;
   eth: number;
 }) {
   const sql = await ensure();
   const now = Date.now();
   await sql.query(
     `insert into degen_vaults
-      (vault, owner, universe, hold_ms, active, eth, current_pool_id, hops_json, entered_at, last_tick, updated_at)
-     values ($1,$2,$3,$4,true,$5,null,'[]',$6,$6,$6)
+      (vault, owner, universe, active, eth, current_pool_id, hops_json, entered_at, last_tick, updated_at)
+     values ($1,$2,$3,true,$4,null,'[]',$5,$5,$5)
      on conflict (vault) do nothing`,
     [
       input.vault.toLowerCase(),
       input.owner.toLowerCase(),
       input.universe,
-      input.holdMs,
       input.eth,
       now,
     ],
@@ -204,7 +195,7 @@ export async function setVaultActive(owner: string, active: boolean, auth: Degen
   await assertOwnerSigned(owner, active ? "resume" : "pause", auth);
   const sql = await ensure();
   await sql.query(
-    "update degen_vaults set active = $1, challenger_id = null, challenger_since = null, updated_at = $2 where owner = $3",
+    "update degen_vaults set active = $1, updated_at = $2 where owner = $3",
     [active, Date.now(), owner.toLowerCase()],
   );
   return getVaultByOwner(owner);
@@ -213,7 +204,7 @@ export async function setVaultActive(owner: string, active: boolean, auth: Degen
 async function deactivate(vault: string) {
   const sql = await ensure();
   await sql.query(
-    "update degen_vaults set active = false, challenger_id = null, challenger_since = null, updated_at = $1 where vault = $2",
+    "update degen_vaults set active = false, updated_at = $1 where vault = $2",
     [Date.now(), vault.toLowerCase()],
   );
 }
@@ -240,12 +231,9 @@ function serialize(row: VaultRow) {
     vault: row.vault,
     owner: row.owner,
     universe: row.universe,
-    holdMs: Number(row.hold_ms),
     active: Boolean(row.active),
     eth: Number(row.eth),
     currentPoolId: row.current_pool_id,
-    challengerId: row.challenger_id,
-    challengerSince: row.challenger_since ? Number(row.challenger_since) : null,
     lastTick: row.last_tick ? Number(row.last_tick) : 0,
     enteredAt: row.entered_at ? Number(row.entered_at) : 0,
     hops: Array.isArray(hops) ? hops : [],
@@ -278,36 +266,33 @@ async function tickVaultLocked(vault: string) {
   ]);
   const row = rows[0];
   if (!row || !row.active) return;
-  const { loadPoolsCached } = await import("./fetch-pools");
-  const pools = await loadPoolsCached();
   const now = Date.now();
 
   if (!row.current_pool_id) {
+    // No position yet: enter immediately, do not wait for the 10-min check.
+    const { loadPoolsCached } = await import("./fetch-pools");
+    const pools = await loadPoolsCached();
     const top = rankForHunt(pools, row.universe, true)[0];
     if (top) await hopTo(row, top, pools, now, "enter");
     return;
   }
 
-  const plan = planHunt({
-    pools,
-    universe: row.universe,
-    onchain: true,
-    currentPoolId: row.current_pool_id,
-    challengerId: row.challenger_id,
-    challengerSince: row.challenger_since ? Number(row.challenger_since) : null,
-    holdMs: Number(row.hold_ms),
-    now,
-  });
+  // Already holding a position: only look for a better pool every CHECK_INTERVAL_MS.
+  if (row.last_tick && now - Number(row.last_tick) < CHECK_INTERVAL_MS) return;
 
-  if (!plan.target) {
-    await sql.query(
-      `update degen_vaults set challenger_id = $1, challenger_since = $2, last_tick = $3, updated_at = $3 where vault = $4`,
-      [plan.challengerId, plan.challengerSince, now, row.vault],
-    );
+  const { loadPoolsCached } = await import("./fetch-pools");
+  const pools = await loadPoolsCached();
+  const target = pickHop({ pools, universe: row.universe, onchain: true, currentPoolId: row.current_pool_id });
+
+  if (!target) {
+    await sql.query("update degen_vaults set last_tick = $1, updated_at = $1 where vault = $2", [
+      now,
+      row.vault,
+    ]);
     return;
   }
 
-  await hopTo(row, plan.target, pools, now, "hunt");
+  await hopTo(row, target, pools, now, "hunt");
 }
 
 async function hopTo(row: VaultRow, to: Pool, pools: Pool[], now: number, kind: "enter" | "hunt") {

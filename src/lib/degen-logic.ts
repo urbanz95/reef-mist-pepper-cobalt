@@ -1,15 +1,9 @@
-import {
-  canMintOnchain,
-  displayPair,
-  huntApr,
-  isWethPair,
-  rankDegen,
-  type DegenUniverse,
-  type Pool,
-} from "./pools";
+import { canMintOnchain, displayPair, huntApr, isWethPair, rankDegen, type DegenUniverse, type Pool } from "./pools.ts";
 
-export const FRICTION = 0.0008;
+/** How often the keeper checks for a better pool. Must match degen-store.ts. */
+export const CHECK_INTERVAL_MS = 10 * 60_000;
 
+/** A new pool must beat the current one by a meaningful margin, not just noise. */
 export function beats(next: number, current: number) {
   if (!Number.isFinite(next) || next <= 0) return false;
   if (!Number.isFinite(current) || current <= 0) return true;
@@ -23,41 +17,25 @@ export function rankForHunt(pools: Pool[], universe: DegenUniverse, onchain: boo
   return rankDegen(pools, universe).filter((p) => !onchain || (canMintOnchain(p) && isWethPair(p)));
 }
 
-export function planHunt(args: {
+/**
+ * One check: is there a pool meaningfully better than the current one? Hops
+ * immediately when yes — there is no separate "confirming" stage any more.
+ * Called at most once per CHECK_INTERVAL_MS per vault (the caller gates that).
+ */
+export function pickHop(args: {
   pools: Pool[];
   universe: DegenUniverse;
   onchain: boolean;
   currentPoolId: string | null;
-  challengerId: string | null;
-  challengerSince: number | null;
-  holdMs: number;
-  now: number;
-}): { challengerId: string | null; challengerSince: number | null; target: Pool | null } {
+}): Pool | null {
   const ranked = rankForHunt(args.pools, args.universe, args.onchain);
   const top = ranked[0] ?? null;
-  const current = args.currentPoolId
-    ? args.pools.find((p) => p.id === args.currentPoolId)
-    : undefined;
-  const currentApr = current ? huntApr(current) : 0;
-  const shouldHunt =
-    !!top &&
-    top.id !== args.currentPoolId &&
-    (!current || beats(huntApr(top), currentApr));
-
-  if (!top || !shouldHunt) {
-    return { challengerId: null, challengerSince: null, target: null };
-  }
-  if (args.challengerId !== top.id) {
-    return { challengerId: top.id, challengerSince: args.now, target: null };
-  }
-  if (args.challengerSince != null && args.now - args.challengerSince >= args.holdMs) {
-    return { challengerId: null, challengerSince: null, target: top };
-  }
-  return {
-    challengerId: args.challengerId,
-    challengerSince: args.challengerSince,
-    target: null,
-  };
+  if (!top) return null;
+  if (!args.currentPoolId) return top; // no position yet: enter the best pool
+  if (top.id === args.currentPoolId) return null;
+  const current = args.pools.find((p) => p.id === args.currentPoolId);
+  if (current && !beats(huntApr(top), huntApr(current))) return null;
+  return top;
 }
 
 export function pairLabel(pool: Pool) {

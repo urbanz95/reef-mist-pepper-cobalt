@@ -42,7 +42,7 @@ export function PositionsView() {
           <Layers className="size-8 text-subtle" />
           <h2 className="mt-4 text-lg font-semibold">No liquidity yet</h2>
           <p className="mt-1 max-w-sm text-sm text-muted">
-            Open a pool, pick a range, and deposit. You can simulate in demo without a wallet.
+            Open a pool, pick a range, and deposit on-chain.
           </p>
           <Button asChild className="mt-6">
             <Link to="/">View markets</Link>
@@ -69,7 +69,7 @@ export function PositionsView() {
                       {p.inRange ? "In range" : "Out of range"}
                     </Badge>
                     <Badge tone={p.status === "onchain" ? "accent" : "neutral"}>
-                      {p.status === "demo" ? "Demo" : p.status === "pending" ? "Pending" : "On-chain"}
+                      {p.status === "pending" ? "Pending" : "On-chain"}
                     </Badge>
                   </div>
                 </div>

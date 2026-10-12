@@ -6,8 +6,7 @@ import { formatAddress } from "@/lib/format";
 import { isRobinhoodChain, useWallet } from "@/lib/wallet-store";
 
 export function WalletButton() {
-  const { address, connecting, connect, disconnect, enableDemo, demo, chainId, error } =
-    useWallet();
+  const { address, connecting, connect, disconnect, chainId, error } = useWallet();
   const [open, setOpen] = useState(false);
 
   if (address) {
@@ -34,14 +33,6 @@ export function WalletButton() {
     );
   }
 
-  if (demo) {
-    return (
-      <Button variant="secondary" size="sm" onClick={() => void disconnect()}>
-        Demo · exit
-      </Button>
-    );
-  }
-
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -64,15 +55,6 @@ export function WalletButton() {
             disabled={connecting}
           >
             {connecting ? "Opening WalletConnect…" : "WalletConnect"}
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              enableDemo();
-              setOpen(false);
-            }}
-          >
-            Continue in demo mode
           </Button>
         </div>
         {error ? <p className="mt-3 text-sm text-down">{error}</p> : null}

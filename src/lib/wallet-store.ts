@@ -61,10 +61,8 @@ type WalletState = {
   chainId: number | null;
   connecting: boolean;
   error: string | null;
-  demo: boolean;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
-  enableDemo: () => void;
   switchChain: () => Promise<void>;
   sendTx: (tx: TxRequest) => Promise<string>;
   signMessage: (message: string) => Promise<string>;
@@ -79,9 +77,6 @@ export const useWallet = create<WalletState>((set, get) => ({
   chainId: null,
   connecting: false,
   error: null,
-  demo: false,
-
-  enableDemo: () => set({ demo: true, error: null }),
 
   disconnect: async () => {
     try {
@@ -89,16 +84,16 @@ export const useWallet = create<WalletState>((set, get) => ({
     } catch {
       /* ignore */
     }
-    set({ address: null, demo: false, error: null, chainId: null });
+    set({ address: null, error: null, chainId: null });
   },
 
   connect: async () => {
-    set({ connecting: true, error: null, demo: false });
+    set({ connecting: true, error: null });
     try {
       const p = await wc();
       p.on("accountsChanged", (...args: unknown[]) => {
         const accounts = (args[0] as string[]) ?? [];
-        set({ address: accounts[0] ?? null, demo: false });
+        set({ address: accounts[0] ?? null });
       });
       p.on("chainChanged", (...args: unknown[]) => {
         const raw = String(args[0] ?? "");
@@ -119,7 +114,6 @@ export const useWallet = create<WalletState>((set, get) => ({
         address: accounts[0] ?? null,
         chainId: Number.isFinite(chainId) ? chainId : null,
         connecting: false,
-        demo: false,
       });
       if (chainId !== ROBINHOOD_CHAIN_ID) {
         await get().switchChain();

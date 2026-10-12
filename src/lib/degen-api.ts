@@ -6,12 +6,9 @@ export type DegenVaultDTO = {
   vault: string;
   owner: string;
   universe: DegenUniverse;
-  holdMs: number;
   active: boolean;
   eth: number;
   currentPoolId: string | null;
-  challengerId: string | null;
-  challengerSince: number | null;
   lastTick: number;
   enteredAt: number;
   hops: {
@@ -32,12 +29,9 @@ function asDto(
     vault: string;
     owner: string;
     universe: DegenUniverse;
-    holdMs: number;
     active: boolean;
     eth: number;
     currentPoolId: string | null;
-    challengerId: string | null;
-    challengerSince: number | null;
     lastTick: number;
     enteredAt: number;
     hops: unknown[];
@@ -75,7 +69,6 @@ export const confirmDegenArm = createServerFn({ method: "POST" })
       hash?: string;
       owner?: string;
       universe?: DegenUniverse;
-      holdMs?: number;
     };
     if (!isTxHash(v?.hash)) throw new Error("A valid transaction hash is required.");
     if (!isAddress(v?.owner)) throw new Error("A valid owner address is required.");
@@ -83,7 +76,6 @@ export const confirmDegenArm = createServerFn({ method: "POST" })
       hash: v.hash,
       owner: v.owner,
       universe: (v.universe ?? "meme") as DegenUniverse,
-      holdMs: Number(v.holdMs ?? 120_000),
     };
   })
   .handler(async ({ data }) => {

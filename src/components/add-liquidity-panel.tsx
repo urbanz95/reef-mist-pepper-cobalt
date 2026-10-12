@@ -33,7 +33,7 @@ export function AddLiquidityPanel({ pool }: { pool: Pool }) {
   const [busy, setBusy] = useState(false);
   const add = usePositions((s) => s.add);
   const mark = usePositions((s) => s.markOnchain);
-  const { address, demo, sendTx, connect, enableDemo } = useWallet();
+  const { address, sendTx, connect } = useWallet();
 
   const usdNum = Number(usd) || 0;
   const range = useMemo(
@@ -48,7 +48,7 @@ export function AddLiquidityPanel({ pool }: { pool: Pool }) {
   const share = pool.tvlUsd > 0 ? usdNum / (pool.tvlUsd + usdNum) : 0;
   const estDaily = dailyFees(pool) * share;
 
-  function openPosition(status: "demo" | "pending", txHash?: string) {
+  function openPosition(status: "pending", txHash?: string) {
     const pos = buildPosition(pool, {
       amountA: split.amountA,
       amountB: split.amountB,
@@ -62,16 +62,6 @@ export function AddLiquidityPanel({ pool }: { pool: Pool }) {
     });
     add(pos);
     return pos;
-  }
-
-  async function onDemo() {
-    if (usdNum <= 0) {
-      toast.error("Enter an amount.");
-      return;
-    }
-    if (!demo && !address) enableDemo();
-    openPosition("demo");
-    toast.success(`Demo position opened in ${pool.tokenA.symbol}/${pool.tokenB.symbol}`);
   }
 
   async function onChainMint() {
@@ -216,9 +206,6 @@ export function AddLiquidityPanel({ pool }: { pool: Pool }) {
       <div className="mt-4 flex flex-col gap-2">
         <Button onClick={() => void onChainMint()} disabled={busy}>
           {busy ? "Confirming…" : address ? "Deposit on-chain" : "Connect and deposit"}
-        </Button>
-        <Button variant="secondary" onClick={() => void onDemo()} disabled={busy}>
-          Simulate deposit (demo)
         </Button>
         <a
           href={uniswapAddLiquidityUrl({

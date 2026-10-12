@@ -20,7 +20,7 @@ export type LpPosition = {
   pMax: number;
   inRange: boolean;
   createdAt: number;
-  status: "demo" | "pending" | "onchain";
+  status: "pending" | "onchain";
   txHash?: string;
   aprAtOpen: number;
 };

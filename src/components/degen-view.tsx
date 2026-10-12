@@ -5,7 +5,6 @@ import { Crosshair, Timer, Zap } from "lucide-react";
 import { PairAvatar } from "@/components/token-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   confirmDegenArm,
   getArmStatus,
@@ -22,19 +21,8 @@ import {
   encodeDeployDegen,
   encodeExit,
 } from "@/lib/degen-chain";
-import {
-  HOLD_OPTIONS,
-  degenPnlUsd,
-  useDegen,
-  type DegenHop,
-} from "@/lib/degen-store";
-import {
-  formatApr,
-  formatDuration,
-  formatEth,
-  formatUsd,
-  formatUsdCompact,
-} from "@/lib/format";
+import { CHECK_INTERVAL_MS, useDegen, type DegenHop } from "@/lib/degen-store";
+import { formatApr, formatDuration, formatEth, formatUsd, formatUsdCompact } from "@/lib/format";
 import {
   displayPair,
   ethPriceUsd,
@@ -54,7 +42,7 @@ const UNIVERSE: { id: DegenUniverse; label: string }[] = [
   { id: "stock", label: "Stocks" },
 ];
 
-const ETH_PRESETS = ["0.25", "1", "2", "5"];
+const MIN_ARM_ETH = 0.05;
 
 function hopsFrom(row: DegenVaultDTO): DegenHop[] {
   return row.hops.map((h) => ({
@@ -80,49 +68,32 @@ export function DegenView() {
     live,
     vault,
     eth,
-    principalEth,
-    feesUsd,
     currentPoolId,
     enteredAt,
     universe,
-    holdMs,
-    challengerId,
-    challengerSince,
+    lastTick,
     hops,
     depositInput,
     setUniverse,
-    setHoldMs,
     setDepositInput,
-    arm,
-    setLive,
     applyServer,
-    resume,
-    stop,
-    tick,
-    commitPlanned,
+    localClear,
   } = useDegen();
-  const enableDemo = useWallet((s) => s.enableDemo);
   const address = useWallet((s) => s.address);
   const connect = useWallet((s) => s.connect);
   const sendTx = useWallet((s) => s.sendTx);
   const waitReceipt = useWallet((s) => s.waitReceipt);
   const signMessage = useWallet((s) => s.signMessage);
-  const demo = useWallet((s) => s.demo);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const onchain = live && !!vault;
 
-  const ranked = useMemo(() => {
-    const all = rankDegen(pools, universe);
-    if (onchain || address) return all.filter(degenChainOk);
-    return all;
-  }, [pools, universe, onchain, address]);
+  const ranked = useMemo(() => rankDegen(pools, universe).filter(degenChainOk), [pools, universe]);
   const current = currentPoolId ? findPool(pools, currentPoolId) : undefined;
-  const challenger = challengerId ? findPool(pools, challengerId) : undefined;
   const currentApr = current ? huntApr(current) : 0;
   const usd = eth * px;
-  const pnl = degenPnlUsd(eth, principalEth, feesUsd, px);
   const paused = !active && !!current;
+  const nextCheckIn = lastTick ? Math.max(0, lastTick + CHECK_INTERVAL_MS - now) : CHECK_INTERVAL_MS;
 
   useEffect(() => {
     if (!address) return;
@@ -148,21 +119,10 @@ export function DegenView() {
   }, [onchain, address, applyServer]);
 
   useEffect(() => {
-    if (!active || onchain) return;
-    const id = window.setInterval(() => {
-      const ts = Date.now();
-      setNow(ts);
-      const hop = tick(pools, ts);
-      if (hop?.kind !== "hunt") return;
-      commitPlanned();
-      toast.success(`Degen hopped to ${hop.toPair} · APR ${formatApr(hop.toApr)}`);
-    }, 1000);
+    if (!onchain) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(id);
-  }, [active, onchain, pools, tick, commitPlanned]);
-
-  const holdLeft =
-    challenger && challengerSince ? Math.max(0, holdMs - (now - challengerSince)) : holdMs;
-  const holdPct = challenger && challengerSince ? Math.min(100, ((now - challengerSince) / holdMs) * 100) : 0;
+  }, [onchain]);
 
   /** Pause/resume is owner-only: the server checks a wallet signature (no gas, no funds move). */
   async function setActiveSigned(owner: string, nextActive: boolean) {
@@ -176,23 +136,27 @@ export function DegenView() {
   }
 
   async function onArm() {
+    if (!address) {
+      toast.error("Connect your wallet first.");
+      return;
+    }
     if (paused) {
       try {
-        if (address && onchain) {
-          const row = await setActiveSigned(address, true);
-          if (row) applyServer({ ...row, hops: hopsFrom(row) });
-        } else {
-          resume();
-        }
+        const row = await setActiveSigned(address, true);
+        if (row) applyServer({ ...row, hops: hopsFrom(row) });
         toast.success("Hunter resumed. The keeper hops 24/7.");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Resume rejected");
       }
       return;
     }
-    const amount = Number(depositInput.replace(",", "."));
-    if (!Number.isFinite(amount) || amount <= 0) {
-      toast.error("Enter an ETH amount.");
+    const amount = Number(depositInput);
+    if (!Number.isFinite(amount) || amount < MIN_ARM_ETH) {
+      toast.error(`Minimum ${MIN_ARM_ETH} ETH (includes keeper gas).`);
+      return;
+    }
+    if (amount > MAX_ARM_ETH) {
+      toast.error(`Launch cap: ${MAX_ARM_ETH} ETH per vault.`);
       return;
     }
     if (!ranked.length) {
@@ -200,75 +164,41 @@ export function DegenView() {
       return;
     }
 
-    if (address) {
-      if (amount < 0.05) {
-        toast.error("Minimum 0.05 ETH on-chain (includes keeper gas).");
-        return;
-      }
-      if (amount > MAX_ARM_ETH) {
-        toast.error(`Launch cap: ${MAX_ARM_ETH} ETH per vault.`);
-        return;
-      }
-      if (!isRobinhoodChain(useWallet.getState().chainId)) {
-        await useWallet.getState().switchChain();
-      }
-      setBusy(true);
-      try {
-        const status = await getArmStatus({ data: address });
-        if (!status.allowed) throw new Error("Closed beta: this wallet is not on the allowlist yet.");
-        if (status.paused) throw new Error("The keeper is paused for maintenance. Try again later.");
-        const keeper = await getKeeperAddress();
-        const value = deployValueWei(amount);
-        toast.message("Confirm in your wallet. One signature. Then the keeper hops on-chain.");
-        const hash = await sendTx({
-          data: encodeDeployDegen(keeper.address),
-          value: `0x${value.toString(16)}`,
-        });
-        toast.message("Confirming the vault on-chain…");
-        const hop = arm(amount, ranked);
-        const row = await confirmDegenArm({
-          data: {
-            hash,
-            owner: address,
-            universe,
-            holdMs,
-          },
-        });
-        if (row) applyServer({ ...row, hops: hopsFrom(row) });
-        toast.success(
-          hop
-            ? `Armed on-chain. The keeper is entering ${hop.toPair}. You can close the browser.`
-            : "Armed on-chain. The keeper handles the hops.",
-        );
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Arm rejected");
-      } finally {
-        setBusy(false);
-      }
-      return;
+    if (!isRobinhoodChain(useWallet.getState().chainId)) {
+      await useWallet.getState().switchChain();
     }
-
-    if (!demo) enableDemo();
-    const hop = arm(amount, pools);
-    if (!hop) {
-      toast.error("Could not arm Degen.");
-      return;
+    setBusy(true);
+    try {
+      const status = await getArmStatus({ data: address });
+      if (!status.allowed) throw new Error("Closed beta: this wallet is not on the allowlist yet.");
+      if (status.paused) throw new Error("The keeper is paused for maintenance. Try again later.");
+      const keeper = await getKeeperAddress();
+      const value = deployValueWei(amount);
+      toast.message("Confirm in your wallet. One signature. Then the keeper hops on-chain.");
+      const hash = await sendTx({
+        data: encodeDeployDegen(keeper.address),
+        value: `0x${value.toString(16)}`,
+      });
+      toast.message("Confirming the vault on-chain…");
+      const row = await confirmDegenArm({ data: { hash, owner: address, universe } });
+      if (row) applyServer({ ...row, hops: hopsFrom(row) });
+      toast.success("Armed on-chain. The keeper handles the hops — you can close the browser.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Arm rejected");
+    } finally {
+      setBusy(false);
     }
-    toast.success(`Demo: first stop ${hop.toPair} · APR ${formatApr(hop.toApr)}`);
   }
 
   async function onStop() {
-    if (address && onchain) {
-      try {
-        const row = await setActiveSigned(address, false);
-        if (row) applyServer({ ...row, hops: hopsFrom(row) });
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Pause rejected");
-        return; // keeper still running: do not pretend it stopped
-      }
+    if (!address) return;
+    try {
+      const row = await setActiveSigned(address, false);
+      if (row) applyServer({ ...row, hops: hopsFrom(row) });
+      toast.message("Hunter stopped. Liquidity stays in the last pool.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Pause rejected");
     }
-    stop(pools);
-    toast.message("Hunter stopped. Liquidity stays in the last pool.");
   }
 
   async function onExit() {
@@ -284,8 +214,7 @@ export function DegenView() {
       toast.message("Withdrawing to your wallet. Only you sign.");
       const hash = await sendTx({ to: vault, data: encodeExit() });
       await waitReceipt(hash);
-      // No signature needed here: the keeper sees the vault is empty and stops by itself.
-      stop(pools);
+      localClear();
       toast.success("ETH is on the way to your wallet.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Withdraw rejected");
@@ -297,16 +226,14 @@ export function DegenView() {
   return (
     <div className="flex flex-col gap-6">
       <section className="overflow-hidden rounded-xl bg-surface px-5 py-6 shadow-[var(--shadow-border)] md:px-8 md:py-8">
-        <p className="text-xs font-medium tracking-[0.18em] text-accent uppercase">
-          Degen Mode
-        </p>
+        <p className="text-xs font-medium tracking-[0.18em] text-accent uppercase">Degen Mode</p>
         <h1 className="mt-2 max-w-xl font-display text-3xl font-semibold tracking-tight md:text-4xl">
           One wallet, one vault. The keeper hops 24/7.
         </h1>
         <p className="mt-3 max-w-lg text-sm text-muted md:text-base">
-          Connect with WalletConnect. You sign the deposit once. Each wallet has its
-          own vault — funds never mix. The Perch keeper chases APR even with the
-          browser closed.
+          Connect with WalletConnect and sign once. Each wallet has its own vault —
+          funds never mix. The keeper checks every 10 minutes for a meaningfully
+          better pool, even with the browser closed.
         </p>
       </section>
 
@@ -314,19 +241,13 @@ export function DegenView() {
         <NestCard
           active={active}
           paused={paused}
-          live={onchain}
           current={current}
           currentApr={currentApr}
           eth={eth}
           usd={usd}
-          feesUsd={feesUsd}
-          pnl={pnl}
           enteredAt={enteredAt}
           now={now}
-          challenger={challenger}
-          holdLeft={holdLeft}
-          holdPct={holdPct}
-          holdMs={holdMs}
+          nextCheckIn={nextCheckIn}
           rankedCount={ranked.length}
           onExit={onchain ? () => void onExit() : undefined}
           exiting={busy}
@@ -337,36 +258,33 @@ export function DegenView() {
           <p className="mt-1 text-sm text-muted">
             {address
               ? "One signature. The keeper — not your wallet — does the hops. You can close the browser."
-              : "Use WalletConnect to go on-chain. Without a wallet, the hunter runs as a demo."}
+              : "Connect a wallet to arm the hunter on-chain."}
           </p>
 
-          <label className="mt-4 mb-1 block text-xs font-medium text-muted">Amount (ETH)</label>
-          <Input
-            inputMode="decimal"
-            value={depositInput}
-            onChange={(e) => setDepositInput(e.target.value.replace(/[^\d.,]/g, ""))}
-            aria-label="Amount in ETH"
-            disabled={active || paused || busy}
-          />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {ETH_PRESETS.map((n) => (
-              <button
-                key={n}
-                type="button"
-                disabled={active || paused || busy}
-                onClick={() => setDepositInput(n)}
-                className={cn(
-                  "h-9 rounded-sm px-3 text-xs font-medium",
-                  depositInput === n ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted hover:text-fg",
-                )}
-              >
-                {n} ETH
-              </button>
-            ))}
+          <label htmlFor="degen-amount" className="mt-4 mb-1 block text-xs font-medium text-muted">
+            Amount (ETH)
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              id="degen-amount"
+              type="range"
+              min={MIN_ARM_ETH}
+              max={MAX_ARM_ETH}
+              step={0.01}
+              value={Math.min(Math.max(Number(depositInput) || MIN_ARM_ETH, MIN_ARM_ETH), MAX_ARM_ETH)}
+              onChange={(e) => setDepositInput(e.target.value)}
+              disabled={active || paused || busy}
+              className="h-2 w-full flex-1 accent-[var(--accent)]"
+            />
+            <span className="w-20 shrink-0 rounded-md bg-surface-2 px-2 py-1.5 text-center font-mono text-sm tabular">
+              {(Number(depositInput) || 0).toFixed(2)}
+            </span>
           </div>
-          <p className="mt-2 font-mono text-xs text-subtle tabular">
-            ≈ {formatUsd(Number(depositInput.replace(",", ".")) * px || 0)}
-            {address ? " · includes keeper gas" : ""}
+          <p className="mt-2 flex justify-between font-mono text-xs text-subtle tabular">
+            <span>
+              {MIN_ARM_ETH} – {MAX_ARM_ETH} ETH
+            </span>
+            <span>≈ {formatUsd((Number(depositInput) || 0) * px)}</span>
           </p>
 
           <p className="mt-5 mb-2 text-xs font-medium text-muted">Universe</p>
@@ -386,58 +304,31 @@ export function DegenView() {
             ))}
           </div>
 
-          <p className="mt-5 mb-2 text-xs font-medium text-muted">Hold before hop</p>
-          <div className="grid grid-cols-4 gap-1.5">
-            {HOLD_OPTIONS.map((h) => (
-              <button
-                key={h.ms}
-                type="button"
-                onClick={() => setHoldMs(h.ms)}
-                className={cn(
-                  "h-10 rounded-sm text-xs font-medium",
-                  holdMs === h.ms ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted hover:text-fg",
-                )}
-              >
-                {h.label}
-              </button>
-            ))}
-          </div>
-
           <div className="mt-5 flex flex-col gap-2">
             {active ? (
-              <Button variant="danger" onClick={onStop}>
+              <Button variant="danger" onClick={() => void onStop()}>
                 Stop hunter
               </Button>
             ) : (
               <Button onClick={() => void onArm()} disabled={busy}>
                 <Zap className="size-4" />
-                {busy
-                  ? "Arming…"
-                  : paused
-                    ? "Resume hunter"
-                    : address
-                      ? "Arm on-chain"
-                      : "Arm in demo"}
+                {busy ? "Arming…" : paused ? "Resume hunter" : "Arm on-chain"}
               </Button>
             )}
-            {!address && !active ? (
+            {!address ? (
               <Button variant="secondary" onClick={() => void connect()} disabled={busy}>
                 WalletConnect
               </Button>
             ) : null}
           </div>
           <p className="mt-3 text-xs text-subtle">
-            On-chain only Uniswap v3 ETH pairs. One wallet = one vault. Impermanent
-            loss applies.
+            On-chain only, Uniswap v3 ETH pairs. One wallet = one vault. Impermanent
+            loss applies and a token that cannot be sold is handed to you as-is.
           </p>
         </section>
       </div>
 
-      <HuntBoard
-        ranked={ranked}
-        currentId={currentPoolId}
-        challengerId={challengerId}
-      />
+      <HuntBoard ranked={ranked} currentId={currentPoolId} />
 
       <HopLog hops={hops} />
     </div>
@@ -447,38 +338,26 @@ export function DegenView() {
 function NestCard({
   active,
   paused,
-  live,
   current,
   currentApr,
   eth,
   usd,
-  feesUsd,
-  pnl,
   enteredAt,
   now,
-  challenger,
-  holdLeft,
-  holdPct,
-  holdMs,
+  nextCheckIn,
   rankedCount,
   onExit,
   exiting,
 }: {
   active: boolean;
   paused: boolean;
-  live: boolean;
   current?: Pool;
   currentApr: number;
   eth: number;
   usd: number;
-  feesUsd: number;
-  pnl: number;
   enteredAt: number;
   now: number;
-  challenger?: Pool;
-  holdLeft: number;
-  holdPct: number;
-  holdMs: number;
+  nextCheckIn: number;
   rankedCount: number;
   onExit?: () => void;
   exiting?: boolean;
@@ -497,7 +376,6 @@ function NestCard({
   }
 
   const inNest = now - enteredAt;
-  const challApr = challenger ? huntApr(challenger) : 0;
 
   return (
     <section className="rounded-xl bg-surface p-5 shadow-[var(--shadow-border)] md:p-6">
@@ -521,7 +399,7 @@ function NestCard({
         {active ? (
           <Badge tone="up" className="gap-1.5">
             <span className="live-dot" />
-            {live ? "On-chain" : "Demo"}
+            On-chain
           </Badge>
         ) : (
           <Badge>Stopped in this pool</Badge>
@@ -533,15 +411,9 @@ function NestCard({
       </p>
       <p className="text-xs text-muted">Chase APR · 1h volume annualized</p>
 
-      <dl className="mt-5 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+      <dl className="mt-5 grid grid-cols-2 gap-2 text-sm">
         <Stat label="ETH" value={formatEth(eth, 4)} />
         <Stat label="Value" value={formatUsd(usd)} />
-        <Stat label="Fees" value={formatUsd(feesUsd)} accent />
-        <Stat
-          label="PnL"
-          value={formatUsd(pnl)}
-          tone={pnl >= 0 ? "text-up" : "text-down"}
-        />
       </dl>
       <p className="mt-3 flex items-center gap-2 text-xs text-muted">
         <Timer className="size-3.5" />
@@ -552,23 +424,9 @@ function NestCard({
         <p className="mt-5 rounded-md bg-surface-2 px-3 py-2 text-sm text-muted">
           Hunter stopped. Liquidity stays here. Resume to hop again.
         </p>
-      ) : challenger ? (
-        <div className="mt-5 rounded-md bg-surface-2 p-3">
-          <div className="flex items-center justify-between gap-2 text-sm">
-            <span className="text-muted">Confirming {displayPair(challenger)}</span>
-            <span className="font-mono text-accent tabular">{formatApr(challApr)}</span>
-          </div>
-          <div className="degen-bar mt-2">
-            <span style={{ width: `${holdPct}%` }} />
-          </div>
-          <p className="mt-1.5 text-xs text-subtle">
-            Hops in {formatDuration(holdLeft)} if it stays ahead
-            {holdMs ? ` (window ${formatDuration(holdMs)})` : ""}.
-          </p>
-        </div>
       ) : (
         <p className="mt-5 rounded-md bg-surface-2 px-3 py-2 text-sm text-muted">
-          You're #1. No challenger in sight.
+          Next check in {formatDuration(nextCheckIn)}.
         </p>
       )}
 
@@ -591,43 +449,23 @@ function NestCard({
   );
 }
 
-function Stat({
-  label,
-  value,
-  accent,
-  tone,
-}: {
-  label: string;
-  value: string;
-  accent?: boolean;
-  tone?: string;
-}) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-surface-2 px-3 py-2">
       <dt className="text-[11px] text-subtle">{label}</dt>
-      <dd className={cn("font-mono tabular", accent && "text-accent", tone)}>{value}</dd>
+      <dd className="font-mono tabular">{value}</dd>
     </div>
   );
 }
 
-function HuntBoard({
-  ranked,
-  currentId,
-  challengerId,
-}: {
-  ranked: Pool[];
-  currentId: string | null;
-  challengerId: string | null;
-}) {
+function HuntBoard({ ranked, currentId }: { ranked: Pool[]; currentId: string | null }) {
   const rows = ranked.slice(0, 16);
   return (
     <section className="rounded-xl bg-surface shadow-[var(--shadow-border)]">
       <div className="flex items-end justify-between gap-3 px-5 py-4">
         <div>
           <h2 className="font-display text-lg font-semibold tracking-tight">APR hunt</h2>
-          <p className="text-xs text-muted">
-            Live ranking. Degen only hops if #1 holds for the full window.
-          </p>
+          <p className="text-xs text-muted">Live ranking, rechecked every 10 minutes.</p>
         </div>
         <p className="text-xs text-subtle">{ranked.length} pools</p>
       </div>
@@ -643,7 +481,6 @@ function HuntBoard({
         <ul>
           {rows.map((p, i) => {
             const mine = p.id === currentId;
-            const chall = p.id === challengerId;
             return (
               <li key={p.id} className="border-t border-border">
                 <Link
@@ -652,7 +489,6 @@ function HuntBoard({
                   className={cn(
                     "grid grid-cols-[2.2rem_1.6fr_0.8fr_0.8fr_0.7fr] items-center gap-2 px-5 py-3 hover:bg-surface-2",
                     mine && "bg-accent/10",
-                    chall && !mine && "bg-surface-2",
                   )}
                 >
                   <span className="font-mono text-xs text-subtle tabular">{i + 1}</span>
@@ -668,8 +504,7 @@ function HuntBoard({
                     <span className="min-w-0">
                       <span className="block truncate font-medium">{displayPair(p)}</span>
                       <span className="block text-xs text-subtle">
-                        {p.version} · {p.feePct}%
-                        {mine ? " · nest" : chall ? " · confirming" : ""}
+                        {p.version} · {p.feePct}%{mine ? " · nest" : ""}
                       </span>
                     </span>
                   </span>
@@ -718,9 +553,7 @@ function HuntBoard({
         })}
       </ul>
       {rows.length === 0 ? (
-        <p className="px-5 py-10 text-center text-sm text-muted">
-          No Uniswap pool matches this universe.
-        </p>
+        <p className="px-5 py-10 text-center text-sm text-muted">No Uniswap pool matches this universe.</p>
       ) : null}
     </section>
   );
