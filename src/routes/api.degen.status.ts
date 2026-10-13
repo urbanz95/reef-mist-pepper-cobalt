@@ -17,11 +17,11 @@ export const Route = createFileRoute("/api/degen/status")({
         const problems: string[] = [];
         const deployed = !isWorkspacePreview();
 
-        if (deployed && dbSource !== "neon") {
+        if (dbSource !== "neon") {
           problems.push("DATABASE_URL is missing: vaults are lost every restart.");
         }
-        if (deployed && !env("KEEPER_PRIVATE_KEY")) problems.push("KEEPER_PRIVATE_KEY is missing.");
-        if (deployed && !env("CRON_SECRET")) problems.push("CRON_SECRET is missing: the scheduler cannot call the keeper.");
+        if (!env("KEEPER_PRIVATE_KEY")) problems.push("KEEPER_PRIVATE_KEY is missing.");
+        if (!env("CRON_SECRET")) problems.push("CRON_SECRET is missing: the scheduler cannot call the keeper.");
 
         let keeper: { address: string; balanceEth: number } | null = null;
         try {
@@ -35,7 +35,7 @@ export const Route = createFileRoute("/api/degen/status")({
             problems.push("The keeper wallet is low on gas (under 0.003 ETH). Send it some ETH.");
           }
         } catch (err) {
-          problems.push(`Keeper wallet or chain not reachable: ${short(err)}`);
+          if (env("KEEPER_PRIVATE_KEY")) problems.push(`Keeper wallet or chain not reachable: ${short(err)}`);
         }
 
         let vaults = { active: 0, total: 0 };
@@ -53,7 +53,7 @@ export const Route = createFileRoute("/api/degen/status")({
             );
           }
         } catch (err) {
-          problems.push(`Database not reachable: ${short(err)}`);
+          if (dbSource === "neon") problems.push(`Database not reachable: ${short(err)}`);
         }
 
         const paused = env("KEEPER_PAUSED") === "1";
