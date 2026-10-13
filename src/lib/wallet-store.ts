@@ -1,42 +1,40 @@
 import { create } from "zustand";
 import { ROBINHOOD_CHAIN, ROBINHOOD_CHAIN_HEX, ROBINHOOD_CHAIN_ID } from "./chain";
 
-const WC_PROJECT_ID =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as { env?: { VITE_WC_PROJECT_ID?: string } }).env?.VITE_WC_PROJECT_ID) ||
-  "c4f79cc821944d9680842e34466bfbd9";
-
 type WcProvider = {
-  accounts?: string[];
-  chainId?: number | string;
-  connect: () => Promise<unknown>;
-  disconnect: () => Promise<unknown>;
   request: (args: { method: string; params?: unknown }) => Promise<unknown>;
-  on: (event: string, handler: (...args: unknown[]) => void) => void;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
+type Eip6963Detail = { info: { rdns?: string; name?: string }; provider: WcProvider };
+
 let provider: WcProvider | null = null;
+let listening = false;
+
+/** Browser wallet discovery: EIP-6963 first (picks MetaMask/Rabby when several), then window.ethereum. */
+async function discover(): Promise<WcProvider | null> {
+  if (typeof window === "undefined") return null;
+  const found: Eip6963Detail[] = [];
+  const onAnnounce = (e: Event) => found.push((e as CustomEvent<Eip6963Detail>).detail);
+  window.addEventListener("eip6963:announceProvider", onAnnounce);
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  await new Promise((r) => setTimeout(r, 150));
+  window.removeEventListener("eip6963:announceProvider", onAnnounce);
+  if (found.length) {
+    const preferred =
+      found.find((d) => d.info.rdns === "io.metamask") ?? found.find((d) => d.info.rdns === "io.rabby") ?? found[0];
+    return preferred.provider;
+  }
+  return (window as unknown as { ethereum?: WcProvider }).ethereum ?? null;
+}
 
 async function wc(): Promise<WcProvider> {
   if (provider) return provider;
-  const { EthereumProvider } = await import("@walletconnect/ethereum-provider");
-  provider = (await EthereumProvider.init({
-    projectId: WC_PROJECT_ID,
-    showQrModal: true,
-    chains: [1],
-    optionalChains: [ROBINHOOD_CHAIN_ID, 1],
-    rpcMap: {
-      [ROBINHOOD_CHAIN_ID]: ROBINHOOD_CHAIN.rpcUrls[0],
-      1: "https://eth.merkle.io",
-    },
-    metadata: {
-      name: "Perch",
-      description: "Degen liquidity on Robinhood Chain",
-      url: typeof window !== "undefined" ? window.location.origin : "https://perch.app",
-      icons: [typeof window !== "undefined" ? `${window.location.origin}/favicon.svg` : ""],
-    },
-  })) as unknown as WcProvider;
-  return provider;
+  const p = await discover();
+  if (!p) throw new Error("No browser wallet found. Install MetaMask or Rabby, or open Perch inside your wallet's browser.");
+  provider = p;
+  return p;
 }
 
 function sleep(ms: number) {
@@ -79,11 +77,7 @@ export const useWallet = create<WalletState>((set, get) => ({
   error: null,
 
   disconnect: async () => {
-    try {
-      await provider?.disconnect();
-    } catch {
-      /* ignore */
-    }
+    // Injected wallets cannot be disconnected by a site; just forget the session locally.
     set({ address: null, error: null, chainId: null });
   },
 
@@ -91,25 +85,21 @@ export const useWallet = create<WalletState>((set, get) => ({
     set({ connecting: true, error: null });
     try {
       const p = await wc();
-      p.on("accountsChanged", (...args: unknown[]) => {
-        const accounts = (args[0] as string[]) ?? [];
-        set({ address: accounts[0] ?? null });
-      });
-      p.on("chainChanged", (...args: unknown[]) => {
-        const raw = String(args[0] ?? "");
-        const n = Number.parseInt(raw, raw.startsWith("0x") ? 16 : 10);
-        set({ chainId: Number.isFinite(n) ? n : ROBINHOOD_CHAIN_ID });
-      });
-      p.on("disconnect", () => {
-        set({ address: null, chainId: null });
-      });
-      await p.connect();
-      const accounts = (p.accounts ?? []) as string[];
-      const chainRaw = p.chainId;
-      const chainId =
-        typeof chainRaw === "number"
-          ? chainRaw
-          : Number.parseInt(String(chainRaw), String(chainRaw).startsWith("0x") ? 16 : 10);
+      if (!listening && p.on) {
+        listening = true;
+        p.on("accountsChanged", (...args: unknown[]) => {
+          const accounts = (args[0] as string[]) ?? [];
+          set({ address: accounts[0] ?? null });
+        });
+        p.on("chainChanged", (...args: unknown[]) => {
+          const raw = String(args[0] ?? "");
+          const n = Number.parseInt(raw, raw.startsWith("0x") ? 16 : 10);
+          set({ chainId: Number.isFinite(n) ? n : null });
+        });
+      }
+      const accounts = ((await p.request({ method: "eth_requestAccounts" })) as string[]) ?? [];
+      const chainRaw = (await p.request({ method: "eth_chainId" })) as string;
+      const chainId = Number.parseInt(String(chainRaw), String(chainRaw).startsWith("0x") ? 16 : 10);
       set({
         address: accounts[0] ?? null,
         chainId: Number.isFinite(chainId) ? chainId : null,

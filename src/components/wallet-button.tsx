@@ -41,10 +41,10 @@ export function WalletButton() {
           Connect
         </Button>
       </DialogTrigger>
-      <DialogContent title="Connect with WalletConnect">
+      <DialogContent title="Connect your wallet">
         <p className="mb-4 text-sm text-muted">
-          Scan the QR in your wallet (Rainbow, MetaMask mobile, Rabby…). No injected
-          browser extension. Each wallet gets its own vault.
+          Use your browser wallet (MetaMask, Rabby…). On mobile, open Perch inside your
+          wallet app's browser. Each wallet gets its own vault.
         </p>
         <div className="flex flex-col gap-2">
           <Button
@@ -54,7 +54,7 @@ export function WalletButton() {
             }}
             disabled={connecting}
           >
-            {connecting ? "Opening WalletConnect…" : "WalletConnect"}
+            {connecting ? "Waiting for wallet…" : "Browser wallet"}
           </Button>
         </div>
         {error ? <p className="mt-3 text-sm text-down">{error}</p> : null}

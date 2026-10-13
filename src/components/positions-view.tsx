@@ -18,7 +18,7 @@ export function PositionsView() {
       <div>
         <h1 className="font-display text-3xl font-semibold tracking-tight">Positions</h1>
         <p className="mt-1 text-sm text-muted">
-          Active liquidity on Robinhood Chain. Demo and on-chain deposits in one place.
+          Active liquidity on Robinhood Chain.
         </p>
       </div>
 

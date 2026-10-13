@@ -231,7 +231,7 @@ export function DegenView() {
           One wallet, one vault. The keeper hops 24/7.
         </h1>
         <p className="mt-3 max-w-lg text-sm text-muted md:text-base">
-          Connect with WalletConnect and sign once. Each wallet has its own vault —
+          Connect your browser wallet and sign once. Each wallet has its own vault —
           funds never mix. The keeper checks every 10 minutes for a meaningfully
           better pool, even with the browser closed.
         </p>
@@ -317,7 +317,7 @@ export function DegenView() {
             )}
             {!address ? (
               <Button variant="secondary" onClick={() => void connect()} disabled={busy}>
-                WalletConnect
+                Connect wallet
               </Button>
             ) : null}
           </div>
