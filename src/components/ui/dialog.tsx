@@ -31,7 +31,7 @@ export function DialogContent({
           </DialogPrimitive.Title>
           <DialogPrimitive.Close className="flex size-11 items-center justify-center rounded-sm text-muted hover:bg-surface-2 hover:text-fg">
             <X className="size-4" />
-            <span className="sr-only">Fechar</span>
+            <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         </div>
         {children}
