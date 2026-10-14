@@ -35,14 +35,13 @@ import {
 import { usePools } from "@/lib/use-pools";
 import { isRobinhoodChain, useWallet } from "@/lib/wallet-store";
 import { cn } from "@/lib/cn";
+import { MIN_ARM_ETH, OPERATOR_STIPEND_ETH } from "@/lib/degen-amounts";
 
 const UNIVERSE: { id: DegenUniverse; label: string }[] = [
   { id: "meme", label: "Memes" },
   { id: "all", label: "All" },
   { id: "stock", label: "Stocks" },
 ];
-
-const MIN_ARM_ETH = 0.05;
 
 function hopsFrom(row: DegenVaultDTO): DegenHop[] {
   return row.hops.map((h) => ({
@@ -152,7 +151,7 @@ export function DegenView() {
     }
     const amount = Number(depositInput);
     if (!Number.isFinite(amount) || amount < MIN_ARM_ETH) {
-      toast.error(`Minimum ${MIN_ARM_ETH} ETH (includes keeper gas).`);
+      toast.error(`Minimum deposit ${MIN_ARM_ETH} ETH, plus ${OPERATOR_STIPEND_ETH} ETH for the keeper and network gas.`);
       return;
     }
     if (amount > MAX_ARM_ETH) {
@@ -262,23 +261,32 @@ export function DegenView() {
           </p>
 
           <label htmlFor="degen-amount" className="mt-4 mb-1 block text-xs font-medium text-muted">
-            Amount (ETH)
+            Deposit (ETH)
           </label>
           <div className="flex items-center gap-3">
             <input
-              id="degen-amount"
+              aria-label="Deposit slider (ETH)"
               type="range"
               min={MIN_ARM_ETH}
               max={MAX_ARM_ETH}
-              step={0.01}
+              step={0.00001}
               value={Math.min(Math.max(Number(depositInput) || MIN_ARM_ETH, MIN_ARM_ETH), MAX_ARM_ETH)}
               onChange={(e) => setDepositInput(e.target.value)}
               disabled={active || paused || busy}
               className="h-2 w-full flex-1 accent-[var(--accent)]"
             />
-            <span className="w-20 shrink-0 rounded-md bg-surface-2 px-2 py-1.5 text-center font-mono text-sm tabular">
-              {(Number(depositInput) || 0).toFixed(2)}
-            </span>
+            <input
+              id="degen-amount"
+              type="number"
+              inputMode="decimal"
+              min={MIN_ARM_ETH}
+              max={MAX_ARM_ETH}
+              step={0.00001}
+              value={depositInput}
+              onChange={(e) => setDepositInput(e.target.value)}
+              disabled={active || paused || busy}
+              className="w-32 shrink-0 rounded-md bg-surface-2 px-2 py-1.5 text-center font-mono text-sm tabular"
+            />
           </div>
           <p className="mt-2 flex justify-between font-mono text-xs text-subtle tabular">
             <span>
@@ -286,6 +294,15 @@ export function DegenView() {
             </span>
             <span>≈ {formatUsd((Number(depositInput) || 0) * px)}</span>
           </p>
+
+          <div className="mt-3 space-y-1 text-xs text-muted" aria-live="polite">
+            <p>Keeper contribution: {formatEth(OPERATOR_STIPEND_ETH, 5)} (added to your deposit).</p>
+            <p>
+              Total before network gas: {formatEth((Number(depositInput) || 0) + OPERATOR_STIPEND_ETH, 5)}
+              {" "}(≈ {formatUsd(((Number(depositInput) || 0) + OPERATOR_STIPEND_ETH) * px)}).
+            </p>
+            <p>Network gas is extra; check the final total in your wallet. The keeper may need further gas top-ups.</p>
+          </div>
 
           <p className="mt-5 mb-2 text-xs font-medium text-muted">Universe</p>
           <div className="grid grid-cols-3 gap-1.5">

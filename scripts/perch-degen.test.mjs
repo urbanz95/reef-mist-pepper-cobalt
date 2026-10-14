@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import ganache from "ganache";
 import { createPublicClient, createWalletClient, custom, getAddress, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { MIN_ARM_ETH, OPERATOR_STIPEND_ETH } from "../src/lib/degen-amounts.ts";
 
 const require = createRequire(import.meta.url);
 const solc = require("solc");
@@ -172,13 +173,17 @@ async function deploy(client, c, args = [], value) {
   return getAddress(r.contractAddress);
 }
 
-async function setup({ wethUsesTransfer }) {
+const stipend = parseEther(OPERATOR_STIPEND_ETH.toFixed(8));
+
+async function setup({ wethUsesTransfer, deposit = parseEther("0.5") }) {
   const weth = await deploy(owner, mocks.MockToken);
   await owner.writeContract({ address: weth, abi: mocks.MockToken.abi, functionName: "fund", value: parseEther("50") });
   await owner.writeContract({ address: weth, abi: mocks.MockToken.abi, functionName: "setUseTransfer", args: [wethUsesTransfer] });
   const router = await deploy(owner, mocks.MockRouter);
   const npm = await deploy(owner, mocks.MockNpm);
-  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router], parseEther("0.501"));
+  const operatorBefore = await pub.getBalance({ address: operator.account.address });
+  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router], deposit + stipend);
+  assert.equal(await pub.getBalance({ address: operator.account.address }) - operatorBefore, stipend);
   const mkToken = async (honeypot = false) => {
     const t = await deploy(owner, mocks.MockToken);
     if (honeypot) {
@@ -212,7 +217,7 @@ describe("PerchDegen exit()", () => {
       assert.equal(r.status, "success");
       const after = await pub.getBalance({ address: owner.account.address });
       const gas = r.gasUsed * r.effectiveGasPrice;
-      // 0.501 ETH deposit minus the 0.001 ETH keeper stipend
+      // The contribution is additional; the full 0.5 ETH deposit stays in the vault.
       assert.equal(after - before + gas, parseEther("0.5"));
       assert.equal(await t.tokenBal(t.weth, t.vault), 0n);
       assert.equal(await pub.getBalance({ address: t.vault }), 0n);
@@ -254,6 +259,30 @@ describe("PerchDegen exit()", () => {
 });
 
 describe("PerchDegen access control and safety rails", () => {
+  it("arms, rebalances and exits with the small minimum deposit", async () => {
+    const deposit = parseEther(MIN_ARM_ETH.toFixed(8));
+    assert.equal(deposit + stipend, parseEther("0.0005"));
+    const t = await setup({ wethUsesTransfer: false, deposit });
+    assert.equal(await t.read(t.vault, perch.abi, "STIPEND"), stipend);
+    assert.equal(await t.read(t.vault, perch.abi, "deposited"), deposit);
+    assert.equal(await t.tokenBal(t.weth, t.vault), deposit);
+    const token = await t.mkToken();
+    const enter = await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, token, 1n, 1n) });
+    assert.equal(enter.status, "success");
+    const before = await pub.getBalance({ address: owner.account.address });
+    const exit = await t.send(owner, "exit");
+    assert.equal(exit.status, "success");
+    const after = await pub.getBalance({ address: owner.account.address });
+    assert.equal(after - before + exit.gasUsed * exit.effectiveGasPrice, deposit);
+  });
+
+  it("rejects an arm payment that only covers the keeper contribution", async () => {
+    const t = await setup({ wethUsesTransfer: false });
+    await assert.rejects(
+      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], stipend),
+    );
+  });
+
   it("only the owner can exit, rescue or change the operator", async () => {
     const t = await setup({ wethUsesTransfer: false });
     for (const [fn, args] of [
@@ -291,7 +320,7 @@ describe("PerchDegen access control and safety rails", () => {
       deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.6")),
     );
     // a smaller vault can top up until it reaches the cap, not past it
-    const small = await deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.101"));
+    const small = await deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.1") + stipend);
     const top = (value) =>
       owner.writeContract({ address: small, abi: perch.abi, functionName: "deposit", value, gas: 1_000_000n });
     await pub.waitForTransactionReceipt({ hash: await top(parseEther("0.4")) });

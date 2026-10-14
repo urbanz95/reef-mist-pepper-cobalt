@@ -26,6 +26,8 @@ updates `/api/degen/status`; funding the keeper with gas remains a separate step
 
 ## Running the keeper
 
+- New vaults accept a minimum deposit of 0.00045 ETH plus a 0.00005 ETH keeper contribution: 0.0005 ETH before transaction gas. This targets a small, roughly €1 starting amount, not a fixed euro price. ETH prices and network fees vary; the wallet shows the final transaction cost. Existing vaults keep their deployed contract and original contribution. The smaller contribution does not guarantee ongoing keeper funding; operators must monitor and top up gas separately.
+
 - `KEEPER_PRIVATE_KEY` (required when deployed): the operator hot key. It can only call `rebalance` on vaults; it cannot withdraw to itself, but it picks the pool of each hop, so keep it funded with gas only and rotate it if leaked. Owners can revoke it any time with `setOperator`.
 - `CRON_SECRET`: `/api/degen/tick` requires `Authorization: Bearer $CRON_SECRET` when deployed. Point a cron at it, because serverless functions do not keep the in-process loop alive while the browser is closed.
 - Pause/resume asks the owner wallet for a free signature. Exit is always a direct on-chain call by the owner; `exit()` swaps back to ETH on a best-effort basis and never gets blocked by a token. `exitNoSwap()`, `rescueToken()` and `rescueNft()` are escape hatches.
