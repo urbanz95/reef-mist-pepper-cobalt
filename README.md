@@ -17,6 +17,8 @@ The workflow must be on the default branch for scheduled runs to start. No Verce
 redeploy is needed to activate this external scheduler.
 
 GitHub schedules can be delayed, so execution every five minutes is not guaranteed.
+The status endpoint allows 15 minutes without a call before reporting a stale
+scheduler; it still reports a scheduler that has never called the keeper.
 Public repositories use free standard runners; private repositories consume the
 account's included Actions minutes. GitHub may disable scheduled workflows in
 public repositories after 60 days without repository activity. A successful run

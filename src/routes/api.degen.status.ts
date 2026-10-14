@@ -3,6 +3,9 @@ import { createFileRoute } from "@tanstack/react-router";
 const short = (err: unknown) =>
   (err instanceof Error ? err.message : "unknown error").split("\n")[0].slice(0, 160);
 
+// GitHub Actions runs every five minutes; allow three intervals for scheduling delays.
+const SCHEDULER_STALE_AFTER_SEC = 15 * 60;
+
 /**
  * Plain-language readiness check for the operator. Public on purpose and free of
  * secrets: it only says WHETHER things are configured, plus the keeper's public
@@ -45,11 +48,11 @@ export const Route = createFileRoute("/api/degen/status")({
           const stats = await keeperStats();
           vaults = { active: stats.activeVaults, total: stats.totalVaults };
           lastTickAgeSec = stats.lastTickAt ? Math.round((Date.now() - stats.lastTickAt) / 1000) : null;
-          if (deployed && (lastTickAgeSec === null || lastTickAgeSec > 300)) {
+          if (deployed && (lastTickAgeSec === null || lastTickAgeSec > SCHEDULER_STALE_AFTER_SEC)) {
             problems.push(
               lastTickAgeSec === null
                 ? "The scheduler has never called /api/degen/tick."
-                : `The scheduler last called the keeper ${Math.round(lastTickAgeSec / 60)} min ago (should be every minute).`,
+                : `The scheduler last called the keeper ${Math.round(lastTickAgeSec / 60)} min ago (scheduled every 5 minutes; warning after 15 minutes without a call).`,
             );
           }
         } catch (err) {
