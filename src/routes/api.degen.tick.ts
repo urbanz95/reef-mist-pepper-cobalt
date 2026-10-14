@@ -7,9 +7,9 @@ import { timingSafeEqual } from "node:crypto";
  * is allowed in; a deployed app answers 401 so nobody can poke the keeper.
  */
 async function authorized(request: Request) {
-  const { env, isWorkspacePreview } = await import("@/lib/env.server");
+  const { env, isDeployed } = await import("@/lib/env.server");
   const secret = env("CRON_SECRET");
-  if (!secret) return isWorkspacePreview();
+  if (!secret) return !isDeployed();
   const given = Buffer.from(request.headers.get("authorization") ?? "");
   const want = Buffer.from(`Bearer ${secret}`);
   return given.length === want.length && timingSafeEqual(given, want);

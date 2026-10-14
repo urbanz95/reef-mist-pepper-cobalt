@@ -1,6 +1,6 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { verifyMessage, type Hex } from "viem";
-import { env, isWorkspacePreview } from "./env.server";
+import { env, isDeployed } from "./env.server";
 import { getSql } from "./db";
 import {
   VaultEmptyError,
@@ -85,7 +85,7 @@ export async function getKeeperAccount() {
     const pk = envPk as Hex;
     return { pk, account: privateKeyToAccount(pk) };
   }
-  if (!isWorkspacePreview()) {
+  if (isDeployed()) {
     // A key generated into the database would sit next to the app data in
     // plaintext and control every vault. Production must inject it.
     throw new Error("KEEPER_PRIVATE_KEY is required when the app is deployed.");

@@ -12,10 +12,10 @@ export const Route = createFileRoute("/api/degen/status")({
   server: {
     handlers: {
       GET: async () => {
-        const { env, isWorkspacePreview } = await import("@/lib/env.server");
+        const { env, isDeployed } = await import("@/lib/env.server");
         const { dbSource } = await import("@/lib/db");
         const problems: string[] = [];
-        const deployed = !isWorkspacePreview();
+        const deployed = isDeployed();
 
         if (dbSource !== "neon") {
           problems.push("DATABASE_URL is missing: vaults are lost every restart.");

@@ -12,3 +12,13 @@ export function env(key: string): string | undefined {
 export function isWorkspacePreview(): boolean {
   return !env("GROK_PROJECT_ID");
 }
+
+/**
+ * True on any real deployment. `isWorkspacePreview()` alone is not enough: a
+ * self-managed Vercel deploy has no GROK_PROJECT_ID, so it would look like the
+ * preview and loosen the keeper's safety checks (open tick endpoint, key stored
+ * in the database). Anything running on Vercel is a deployment.
+ */
+export function isDeployed(): boolean {
+  return !isWorkspacePreview() || Boolean(env("VERCEL")) || env("NODE_ENV") === "production" && Boolean(env("VERCEL_ENV"));
+}

@@ -26,6 +26,29 @@ if (!databaseUrl) {
   process.exit(0);
 }
 
+// Fail early, with words a human can act on, when the pasted URL is malformed.
+// Only the host name is printed — never the user name or password.
+{
+  let host = "";
+  try {
+    const u = new URL(databaseUrl);
+    if (!/^postgres(ql)?:$/.test(u.protocol)) throw new Error("protocol");
+    host = u.hostname;
+  } catch {
+    console.error(
+      "[migrate] DATABASE_URL is not a valid connection string. It must be ONE line starting with postgresql:// — copy it again from Neon (Connect → connection string), without quotes, without 'psql', without spaces.",
+    );
+    process.exit(1);
+  }
+  if (!host.includes(".")) {
+    console.error(
+      `[migrate] DATABASE_URL points to host "${host}", which is not a real database address (a Neon host looks like ep-xxxx-pooler.eu-central-1.aws.neon.tech). Copy the full connection string again from Neon. If the password has special characters like @ / # ?, use the password-reset button in Neon to get a simpler one.`,
+    );
+    process.exit(1);
+  }
+  console.log(`[migrate] connecting to ${host}`);
+}
+
 const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 async function main() {
