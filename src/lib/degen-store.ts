@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { DegenUniverse } from "./pools";
+import { MIN_ARM_ETH } from "./degen-amounts";
 
 export type { DegenUniverse };
 
@@ -58,7 +59,7 @@ export const useDegen = create<DegenState>()(
       universe: "meme",
       lastTick: 0,
       hops: [],
-      depositInput: "0.1",
+      depositInput: String(MIN_ARM_ETH),
 
       setUniverse: (universe) => set({ universe }),
       setDepositInput: (depositInput) => set({ depositInput }),

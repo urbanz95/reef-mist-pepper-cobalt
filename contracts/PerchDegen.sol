@@ -69,7 +69,7 @@ interface INpm {
 ///         off at any time with setOperator(). The owner paths (exit, exitNoSwap,
 ///         rescueToken, rescueNft) never depend on a swap succeeding.
 contract PerchDegen {
-    uint256 public constant STIPEND = 0.001 ether;
+    uint256 public constant STIPEND = 0.00005 ether;
     /// @notice Launch cap on the total ETH ever deposited into one vault (stipend
     ///         excluded). Bounds what a compromised keeper can ever put at risk.
     uint256 public constant MAX_DEPOSIT = 0.5 ether;
