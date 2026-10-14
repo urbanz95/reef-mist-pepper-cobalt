@@ -8,6 +8,20 @@ Uniswap liquidity desk on Robinhood Chain, with a Degen hunter that hops to the 
 
 Not affiliated with Robinhood Markets, Inc. The contract is not audited.
 
+## Free scheduler with GitHub Actions
+
+The `Keeper` workflow calls the production keeper every five minutes and can also
+be started manually from the repository's Actions tab. Add a repository Actions
+secret named `CRON_SECRET` with the same value as Vercel's Production variable.
+The workflow must be on the default branch for scheduled runs to start. No Vercel
+redeploy is needed to activate this external scheduler.
+
+GitHub schedules can be delayed, so execution every five minutes is not guaranteed.
+Public repositories use free standard runners; private repositories consume the
+account's included Actions minutes. GitHub may disable scheduled workflows in
+public repositories after 60 days without repository activity. A successful run
+updates `/api/degen/status`; funding the keeper with gas remains a separate step.
+
 ## Running the keeper
 
 - `KEEPER_PRIVATE_KEY` (required when deployed): the operator hot key. It can only call `rebalance` on vaults; it cannot withdraw to itself, but it picks the pool of each hop, so keep it funded with gas only and rotate it if leaked. Owners can revoke it any time with `setOperator`.
