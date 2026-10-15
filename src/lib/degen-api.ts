@@ -11,6 +11,11 @@ export type DegenVaultDTO = {
   currentPoolId: string | null;
   lastTick: number;
   enteredAt: number;
+  reason: string;
+  valueEth: number | null;
+  valuedAt: number;
+  pendingHash: string | null;
+  halted: boolean;
   hops: {
     id: string;
     at: number;
@@ -35,6 +40,11 @@ function asDto(
     lastTick: number;
     enteredAt: number;
     hops: unknown[];
+    reason: string;
+    valueEth: number | null;
+    valuedAt: number;
+    pendingHash: string | null;
+    halted: boolean;
   } | null,
 ): DegenVaultDTO | null {
   if (!row) return null;
@@ -45,8 +55,7 @@ function asDto(
 }
 
 export const getKeeperAddress = createServerFn({ method: "GET" }).handler(async () => {
-  const { getKeeperPublic, startKeeperLoop } = await import("./keeper.server");
-  startKeeperLoop();
+  const { getKeeperPublic } = await import("./keeper.server");
   return getKeeperPublic();
 });
 
@@ -58,9 +67,14 @@ export const getArmStatus = createServerFn({ method: "POST" })
     return owner;
   })
   .handler(async ({ data: owner }) => {
-    const { armAllowed, keeperPaused } = await import("./keeper.server");
+    const { armAllowed, keeperPaused, liveReadiness } = await import("./keeper.server");
     const { MAX_ARM_ETH } = await import("./degen-chain");
-    return { allowed: armAllowed(owner), paused: keeperPaused(), maxEth: MAX_ARM_ETH };
+    return {
+      allowed: armAllowed(owner),
+      paused: keeperPaused(),
+      maxEth: MAX_ARM_ETH,
+      ...(await liveReadiness()),
+    };
   });
 
 export const confirmDegenArm = createServerFn({ method: "POST" })
@@ -91,7 +105,8 @@ export const setDegenActive = createServerFn({ method: "POST" })
     if (typeof sig !== "string" || !/^0x[0-9a-fA-F]+$/.test(sig) || sig.length > 4096) {
       throw new Error("A wallet signature is required.");
     }
-    if (!Number.isFinite(Number(v.auth?.timestamp))) throw new Error("A wallet signature is required.");
+    if (!Number.isFinite(Number(v.auth?.timestamp)))
+      throw new Error("A wallet signature is required.");
     return {
       owner: v.owner,
       active: Boolean(v.active),
@@ -110,7 +125,11 @@ export const getDegenVault = createServerFn({ method: "POST" })
   })
   .handler(async ({ data: owner }) => {
     if (!owner) return null;
-    const { getVaultByOwner, startKeeperLoop } = await import("./keeper.server");
-    startKeeperLoop();
+    const { getVaultByOwner } = await import("./keeper.server");
     return asDto(await getVaultByOwner(owner));
   });
+
+export const getDegenReadiness = createServerFn({ method: "GET" }).handler(async () => {
+  const { liveReadiness } = await import("./keeper.server");
+  return liveReadiness();
+});
