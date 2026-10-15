@@ -61,6 +61,8 @@ contract MockRouter {
 }
 
 contract MockNpm {
+  function factory() external view returns(address) { return address(this); }
+  function getPool(address, address, uint24) external view returns(address) { return address(this); }
   struct Pos { address t0; address t1; uint128 liq; uint256 a0; uint256 a1; uint256 o0; uint256 o1; }
   struct MintP { address token0; address token1; uint24 fee; int24 tickLower; int24 tickUpper; uint256 amount0Desired; uint256 amount1Desired; uint256 amount0Min; uint256 amount1Min; address recipient; uint256 deadline; }
   struct DecP { uint256 tokenId; uint128 liquidity; uint256 amount0Min; uint256 amount1Min; uint256 deadline; }
@@ -182,13 +184,14 @@ async function setup({ wethUsesTransfer, deposit = parseEther("0.5") }) {
   const router = await deploy(owner, mocks.MockRouter);
   const npm = await deploy(owner, mocks.MockNpm);
   const operatorBefore = await pub.getBalance({ address: operator.account.address });
-  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router], deposit + stipend);
+  const vault = await deploy(owner, perch, [operator.account.address, weth, npm, router, []], deposit + stipend);
   assert.equal(await pub.getBalance({ address: operator.account.address }) - operatorBefore, stipend);
   const mkToken = async (honeypot = false) => {
     const t = await deploy(owner, mocks.MockToken);
     if (honeypot) {
       await owner.writeContract({ address: t, abi: mocks.MockToken.abi, functionName: "setBlockedTo", args: [router] });
     }
+    await owner.writeContract({ address: vault, abi: perch.abi, functionName: "setTokenAllowed", args: [t, true] });
     return t;
   };
   const read = (address, abi, functionName, args = []) => pub.readContract({ address, abi, functionName, args });
@@ -230,7 +233,7 @@ describe("PerchDegen exit()", () => {
     await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, token, 1n, 1n) });
     assert.equal(await t.read(t.vault, perch.abi, "tokenId"), 1n);
     const before = await pub.getBalance({ address: owner.account.address });
-    const r = await t.send(owner, "exit");
+    const r = await t.send(owner, "exitProtected", [1n, parseEther("0.49"), BigInt((await pub.getBlock()).timestamp) + 60n]);
     const after = await pub.getBalance({ address: owner.account.address });
     assert.equal(after - before + r.gasUsed * r.effectiveGasPrice, parseEther("0.5"));
     assert.equal(await t.read(t.vault, perch.abi, "tokenId"), 0n);
@@ -270,7 +273,7 @@ describe("PerchDegen access control and safety rails", () => {
     const enter = await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, token, 1n, 1n) });
     assert.equal(enter.status, "success");
     const before = await pub.getBalance({ address: owner.account.address });
-    const exit = await t.send(owner, "exit");
+    const exit = await t.send(owner, "exitProtected", [1n, deposit * 99n / 100n, (await pub.getBlock()).timestamp + 60n]);
     assert.equal(exit.status, "success");
     const after = await pub.getBalance({ address: owner.account.address });
     assert.equal(after - before + exit.gasUsed * exit.effectiveGasPrice, deposit);
@@ -279,7 +282,7 @@ describe("PerchDegen access control and safety rails", () => {
   it("rejects an arm payment that only covers the keeper contribution", async () => {
     const t = await setup({ wethUsesTransfer: false });
     await assert.rejects(
-      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], stipend),
+      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router, []], stipend),
     );
   });
 
@@ -302,6 +305,8 @@ describe("PerchDegen access control and safety rails", () => {
     const token = await t.mkToken();
     await reverts(t.rebalance(operator, token, 1n, 0n), "minOutEnter = 0");
     await pub.waitForTransactionReceipt({ hash: await t.rebalance(operator, token, 1n, 1n) });
+    await provider.request({ method: "evm_increaseTime", params: [1801] });
+    await provider.request({ method: "evm_mine", params: [] });
     // hopping away from a position with a pair-token balance also needs minOutExit > 0
     const next = await t.mkToken();
     await reverts(t.rebalance(operator, next, 0n, 1n), "minOutExit = 0");
@@ -317,10 +322,10 @@ describe("PerchDegen access control and safety rails", () => {
     );
     // arming with more than the cap reverts
     await assert.rejects(
-      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.6")),
+      deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router, []], parseEther("0.6")),
     );
     // a smaller vault can top up until it reaches the cap, not past it
-    const small = await deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router], parseEther("0.1") + stipend);
+    const small = await deploy(owner, perch, [operator.account.address, t.weth, t.npm, t.router, []], parseEther("0.1") + stipend);
     const top = (value) =>
       owner.writeContract({ address: small, abi: perch.abi, functionName: "deposit", value, gas: 1_000_000n });
     await pub.waitForTransactionReceipt({ hash: await top(parseEther("0.4")) });
@@ -370,4 +375,61 @@ describe("PerchDegen access control and safety rails", () => {
     await t.send(owner, "setOperator", [stranger.account.address]);
     await reverts(t.rebalance(operator, token, 1n, 1n), "revoked operator");
   });
+});
+
+describe('PerchDegen v2 risk and exit protections',()=>{
+  it('rejects unapproved tokens, premature hops and a fifth daily entry',async()=>{
+    const t=await setup({wethUsesTransfer:false});
+    const token=await t.mkToken();
+    await t.send(owner,'setTokenAllowed',[token,false]);
+    await reverts(t.rebalance(operator,token,1n,1n));
+    await t.send(owner,'setTokenAllowed',[token,true]);
+    assert.equal((await pub.waitForTransactionReceipt({hash:await t.rebalance(operator,token,1n,1n)})).status,'success');
+    await reverts(t.rebalance(operator,token,1n,1n));
+    for(let i=0;i<3;i++){
+      await provider.request({method:'evm_increaseTime',params:[1801]});await provider.request({method:'evm_mine',params:[]});
+      assert.equal((await pub.waitForTransactionReceipt({hash:await t.rebalance(operator,token,1n,1n)})).status,'success');
+    }
+    await provider.request({method:'evm_increaseTime',params:[1801]});await provider.request({method:'evm_mine',params:[]});
+    await reverts(t.rebalance(operator,token,1n,1n));
+    assert.equal(await t.read(t.vault,perch.abi,'dailyTrades'),4n);
+  });
+  it('protected exit reverts atomically for expired quotes and insufficient proceeds',async()=>{
+    const t=await setup({wethUsesTransfer:false});const token=await t.mkToken();
+    await pub.waitForTransactionReceipt({hash:await t.rebalance(operator,token,1n,1n)});
+    const deadline=(await pub.getBlock()).timestamp+120n;
+    await reverts(t.send(owner,'exitProtected',[1n,parseEther('.51'),deadline]));
+    await reverts(t.send(owner,'exitProtected',[1n,parseEther('.49'),1n]));
+    await reverts(t.send(operator,'exitProtected',[1n,parseEther('.49'),deadline]));
+    assert.equal(await t.read(t.vault,perch.abi,'tokenId'),1n);
+    assert.equal((await t.send(owner,'exitProtected',[1n,parseEther('.49'),deadline])).status,'success');
+    assert.equal(await t.read(t.vault,perch.abi,'operator'),'0x0000000000000000000000000000000000000000');
+  });
+  it('risk exit bypasses cooldown, keeps WETH in the vault and revokes the operator',async()=>{
+    const t=await setup({wethUsesTransfer:false});const token=await t.mkToken();
+    await pub.waitForTransactionReceipt({hash:await t.rebalance(operator,token,1n,1n)});
+    const opBefore=await pub.getBalance({address:operator.account.address});
+    const r=await t.send(operator,'exitToWeth',[1n,parseEther('.49'),(await pub.getBlock()).timestamp+120n]);
+    assert.equal(r.status,'success');assert.equal(await t.tokenBal(t.weth,t.vault),parseEther('.5'));
+    assert.equal(await t.read(t.vault,perch.abi,'tokenId'),0n);
+    assert.equal(await pub.getBalance({address:operator.account.address}),opBefore-r.gasUsed*r.effectiveGasPrice);
+    await reverts(t.rebalance(operator,token,1n,1n));
+    assert.equal((await t.send(owner,'exitNoSwap')).status,'success');
+  });
+  it('a failed sale preserves the NFT and the raw exit remains available',async()=>{
+    const t=await setup({wethUsesTransfer:false});const token=await t.mkToken(true);
+    await pub.waitForTransactionReceipt({hash:await t.rebalance(operator,token,1n,1n)});
+    await reverts(t.send(owner,'exitProtected',[1n,parseEther('.49'),(await pub.getBlock()).timestamp+120n]));
+    assert.equal(await t.read(t.vault,perch.abi,'tokenId'),1n);
+    assert.equal((await t.send(owner,'exitNoSwap')).status,'success');
+    assert.equal(await t.tokenBal(token,owner.account.address),parseEther('.25'));
+  });
+});
+
+it('plain ETH transfers cannot bypass the cumulative deposit cap',async()=>{
+ const t=await setup({wethUsesTransfer:false});
+ await reverts(owner.sendTransaction({to:t.vault,value:1n,gas:500000n}), 'direct ETH transfer over cap');
+ assert.equal(await t.read(t.vault,perch.abi,'deposited'),parseEther('.5'));
+ assert.equal(await t.tokenBal(t.weth,t.vault),parseEther('.5'));
+ assert.equal((await t.send(owner,'exitNoSwap')).status,'success','WETH withdrawal still bypasses wrapping and cap checks');
 });

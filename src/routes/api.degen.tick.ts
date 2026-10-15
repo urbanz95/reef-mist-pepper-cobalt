@@ -19,9 +19,13 @@ async function run(request: Request) {
   if (!(await authorized(request))) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
-  const { startKeeperLoop, tickAllVaults } = await import("@/lib/keeper.server");
-  startKeeperLoop();
-  return Response.json(await tickAllVaults());
+  const { tickAllVaults } = await import("@/lib/keeper.server");
+  try {
+    const result = await tickAllVaults();
+    return Response.json(result, { status: result.ok ? 200 : "busy" in result ? 409 : 503 });
+  } catch {
+    return Response.json({ ok: false, error: "Keeper unavailable" }, { status: 503 });
+  }
 }
 
 export const Route = createFileRoute("/api/degen/tick")({

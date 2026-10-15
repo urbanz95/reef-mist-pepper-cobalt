@@ -19,7 +19,7 @@ export type DegenHop = {
 };
 
 /** How often the keeper checks for a better pool. Must match keeper.server.ts. */
-export const CHECK_INTERVAL_MS = 10 * 60_000;
+export { CHECK_INTERVAL_MS } from "./degen-logic";
 
 type DegenState = {
   active: boolean;

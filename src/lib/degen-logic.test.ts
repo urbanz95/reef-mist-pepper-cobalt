@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { beats, pickHop } from "./degen-logic.ts";
+import { rankForHunt } from "./degen-logic.ts";
 import { WETH, type Pool } from "./pools.ts";
 
 function pool(tag: string, tvlUsd: number, volume24h: number, feePct = 0.3): Pool {
@@ -21,38 +21,13 @@ function pool(tag: string, tvlUsd: number, volume24h: number, feePct = 0.3): Poo
   } as unknown as Pool;
 }
 
-const ID_A = `0x${"a".padStart(40, "0")}`;
-const ID_B = `0x${"b".padStart(40, "0")}`;
-
-describe("beats", () => {
-  it("requires a meaningful margin, not just noise", () => {
-    assert.equal(beats(10.5, 10), false); // 5% relative, under the 8% floor
-    assert.equal(beats(11, 10), true); // 10% relative
-    assert.equal(beats(0, 10), false);
-    assert.equal(beats(5, 0), true);
-  });
+it("discovery ranks 24h fees and ignores one-hour spikes", () => {
+  const a = { ...pool("a", 200000, 10000), volume1h: 1000000 };
+  const b = pool("b", 200000, 20000);
+  assert.equal(rankForHunt([a, b], "meme", true)[0].id, b.id);
 });
-
-describe("pickHop", () => {
-  it("enters the best pool when there is no current position", () => {
-    const pools = [pool("a", 20_000, 1_000), pool("b", 20_000, 5_000)];
-    const target = pickHop({ pools, universe: "meme", onchain: true, currentPoolId: null });
-    assert.equal(target?.id, ID_B);
-  });
-
-  it("does not hop to itself or to a pool that is not meaningfully better", () => {
-    const pools = [pool("a", 20_000, 5_000), pool("b", 20_000, 5_050)];
-    assert.equal(pickHop({ pools, universe: "meme", onchain: true, currentPoolId: ID_A }), null);
-  });
-
-  it("hops immediately once a pool is meaningfully ahead — no confirmation delay", () => {
-    const pools = [pool("a", 20_000, 1_000), pool("b", 20_000, 10_000)];
-    const target = pickHop({ pools, universe: "meme", onchain: true, currentPoolId: ID_A });
-    assert.equal(target?.id, ID_B);
-  });
-
-  it("ignores launchpad pools that cannot be minted on Uniswap v3", () => {
-    const launchpad = { ...pool("a", 20_000, 10_000), venue: "launchpad" } as unknown as Pool;
-    assert.equal(pickHop({ pools: [launchpad], universe: "meme", onchain: true, currentPoolId: null }), null);
-  });
+it("discovery excludes pools that cannot be executed on v3 WETH", () => {
+  const a = pool("a", 200000, 10000);
+  assert.equal(rankForHunt([{ ...a, venue: "launchpad" }], "meme", true).length, 0);
+  assert.equal(rankForHunt([{ ...a, version: "v4" }], "meme", true).length, 0);
 });

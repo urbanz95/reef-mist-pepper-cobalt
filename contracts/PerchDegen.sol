@@ -25,7 +25,12 @@ interface ISwapRouter {
     function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256);
 }
 
+interface IFactory {
+    function getPool(address, address, uint24) external view returns (address);
+}
+
 interface INpm {
+    function factory() external view returns (address);
     struct MintParams {
         address token0;
         address token1;
@@ -66,9 +71,14 @@ interface INpm {
 /// @dev    Trust model: the operator is a trusted hot key. It cannot withdraw to
 ///         itself, but it picks the pool/tokens/ticks of each hop, so a stolen
 ///         operator key can still burn value through bad hops. Owner can cut it
-///         off at any time with setOperator(). The owner paths (exit, exitNoSwap,
-///         rescueToken, rescueNft) never depend on a swap succeeding.
+///         off at any time with setOperator(). The raw owner exits and rescue paths never depend on a swap succeeding.
+///         Token permissions and trade limits bound, but cannot eliminate, hot-key risk.
 contract PerchDegen {
+    uint256 public constant VERSION = 2;
+    uint256 public lastRebalance;
+    uint256 public dayStart;
+    uint256 public dailyTrades;
+    mapping(address => bool) public allowedToken;
     uint256 public constant STIPEND = 0.00005 ether;
     /// @notice Launch cap on the total ETH ever deposited into one vault (stipend
     ///         excluded). Bounds what a compromised keeper can ever put at risk.
@@ -118,7 +128,9 @@ contract PerchDegen {
         _locked = false;
     }
 
-    constructor(address operator_, address weth_, address npm_, address router_) payable {
+    constructor(address operator_, address weth_, address npm_, address router_, address[] memory tokens_) payable {
+        if (weth_.code.length == 0 || npm_.code.length == 0 || router_.code.length == 0 || tokens_.length > 16) revert BadValue();
+        for (uint256 i; i < tokens_.length; i++) allowedToken[tokens_[i]] = true;
         if (operator_ == address(0) || msg.value <= STIPEND) revert BadValue();
         owner = msg.sender;
         operator = operator_;
@@ -140,7 +152,11 @@ contract PerchDegen {
     ///      implementations that use transfer().
     receive() external payable {
         if (msg.sender == address(weth)) return;
-        if (msg.value > 0) weth.deposit{value: msg.value}();
+        if (msg.value > 0) {
+            if (deposited + msg.value > MAX_DEPOSIT) revert CapExceeded();
+            deposited += msg.value;
+            weth.deposit{value: msg.value}();
+        }
     }
 
     function deposit() external payable onlyOwner {
@@ -156,6 +172,11 @@ contract PerchDegen {
         emit OperatorChanged(next);
     }
 
+    /// @notice Reviewed tokens are chosen by the owner, never by the keeper.
+    function setTokenAllowed(address token, bool allowed) external onlyOwner {
+        allowedToken[token] = allowed;
+    }
+
     /// @param minOutExit  min WETH for swapping the old pair token back; must be
     ///                    > 0 whenever there is something to swap.
     /// @param minOutEnter min pair token for the half-WETH swap; must be > 0.
@@ -168,23 +189,41 @@ contract PerchDegen {
         uint256 minOutExit,
         uint256 minOutEnter
     ) external onlyOperator nonReentrant {
+        if (lastRebalance != 0 && block.timestamp < lastRebalance + 30 minutes) revert BadValue();
+        if (block.timestamp >= dayStart + 1 days) { dayStart = block.timestamp; dailyTrades = 0; }
+        if (dailyTrades >= 4) revert BadValue();
+        lastRebalance = block.timestamp;
+        dailyTrades++;
         _exitNft();
         _toWethStrict(token0, minOutExit);
         _toWethStrict(token1, minOutExit);
         _enter(t0, t1, fee_, tickLower, tickUpper, minOutEnter);
     }
 
-    /// @notice Close the position, swap back to ETH (best effort) and send
-    ///         everything to the owner. A token whose swap fails (honeypot, no
-    ///         liquidity) is sent to the owner as-is instead of blocking the exit.
-    ///         Swaps use no slippage floor: use exitNoSwap() if you fear sandwiching.
-    function exit() external onlyOwner nonReentrant {
-        _exit(true);
+    /// @notice Safe default: return ETH and raw tokens, with no market sale.
+    function exit() external onlyOwner nonReentrant { _exit(); }
+    function exitNoSwap() external onlyOwner nonReentrant { _exit(); }
+
+    /// @notice Atomic quoted exit. If either floor fails, no assets move.
+    function exitProtected(uint256 minOut, uint256 minTotalWeth, uint256 deadline) external onlyOwner nonReentrant {
+        _liquidate(minOut, minTotalWeth, deadline);
+        _exit();
     }
 
-    /// @notice Same as exit() but never swaps: owner gets ETH plus the raw pair token.
-    function exitNoSwap() external onlyOwner nonReentrant {
-        _exit(false);
+    /// @notice Risk exit keeps WETH in the owner's vault and revokes automation.
+    function exitToWeth(uint256 minOut, uint256 minTotalWeth, uint256 deadline) external onlyOperator nonReentrant {
+        _liquidate(minOut, minTotalWeth, deadline);
+        operator = address(0);
+        token0 = address(0); token1 = address(0); fee = 0;
+        emit OperatorChanged(address(0));
+    }
+
+    function _liquidate(uint256 minOut, uint256 minTotalWeth, uint256 deadline) internal {
+        if (deadline < block.timestamp || deadline > block.timestamp + 5 minutes || minTotalWeth == 0) revert BadValue();
+        _exitNft();
+        _toWethStrict(token0, minOut);
+        _toWethStrict(token1, minOut);
+        if (weth.balanceOf(address(this)) < minTotalWeth) revert BadValue();
     }
 
     /// @notice Escape hatch: pull any ERC20 held by the vault to the owner.
@@ -201,17 +240,16 @@ contract PerchDegen {
         uint256 id = tokenId;
         if (id == 0) revert BadValue();
         tokenId = 0;
+        operator = address(0);
         npm.transferFrom(address(this), owner, id);
     }
 
     // ---------------------------------------------------------------- internals
 
-    function _exit(bool swap) internal {
+    function _exit() internal {
+        operator = address(0);
+        emit OperatorChanged(address(0));
         _exitNft();
-        if (swap) {
-            _toWethBestEffort(token0);
-            _toWethBestEffort(token1);
-        }
         uint256 wb = weth.balanceOf(address(this));
         if (wb > 0) {
             try weth.withdraw(wb) {} catch {}
@@ -249,6 +287,9 @@ contract PerchDegen {
         address w = address(weth);
         if (t0 != w && t1 != w) revert NeedWeth();
         address other = t0 == w ? t1 : t0;
+        if (!allowedToken[other]) revert BadValue();
+        { address pool = IFactory(npm.factory()).getPool(t0, t1, fee_);
+        if (pool == address(0) || pool.code.length == 0) revert BadValue(); }
         uint256 half = weth.balanceOf(address(this)) / 2;
         if (half == 0) revert BadValue();
         if (!_swap(w, other, fee_, half, minOutEnter)) revert SwapFailed();
@@ -312,14 +353,6 @@ contract PerchDegen {
         if (bal == 0) return;
         if (minOut == 0) revert BadValue();
         if (!_swap(token, address(weth), fee == 0 ? 3000 : fee, bal, minOut)) revert SwapFailed();
-    }
-
-    /// @dev Owner path: never reverts because of the token.
-    function _toWethBestEffort(address token) internal {
-        if (token == address(0) || token == address(weth)) return;
-        try IERC20(token).balanceOf(address(this)) returns (uint256 bal) {
-            if (bal > 0) _swap(token, address(weth), fee == 0 ? 3000 : fee, bal, 0);
-        } catch {}
     }
 
     /// @dev Returns false instead of reverting so owner paths can carry on.

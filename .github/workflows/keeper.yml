@@ -33,8 +33,8 @@ jobs:
             --header "Authorization: Bearer $CRON_SECRET" \
             --output "$response_file" \
             https://reef-mist-pepper-cobalt.vercel.app/api/degen/tick
-          if ! jq -e '(.ok == true) or (.skipped == true)' "$response_file" > /dev/null; then
+          if ! jq -e '.ok == true' "$response_file" > /dev/null; then
             echo '::error::The keeper returned an unsuccessful or invalid response. Check Vercel runtime logs and /api/degen/status.'
             exit 1
           fi
-          echo 'Keeper request succeeded.'
+          echo 'Keeper check completed. This 5-minute fallback does not enable real-time entries.'

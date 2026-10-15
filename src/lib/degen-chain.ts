@@ -1,5 +1,6 @@
 import {
   createPublicClient,
+  keccak256,
   createWalletClient,
   encodeDeployData,
   encodeFunctionData,
@@ -12,6 +13,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { CONTRACTS, ROBINHOOD_CHAIN_ID, feeToPips } from "./chain";
+import { PROBE_ABI, PROBE_BYTECODE } from "./degen-probe-artifact";
 import { DEGEN_ABI, DEGEN_BYTECODE } from "./degen-artifact";
 import { canMintOnchain, isWethPair, WETH, type Pool } from "./pools";
 import { rangeFromPreset, sortedTokens } from "./uniswap-lp";
@@ -31,7 +33,7 @@ export const robinhoodChain = {
   },
 } as const;
 
-const transport = http("https://rpc.mainnet.chain.robinhood.com");
+const transport = http("https://rpc.mainnet.chain.robinhood.com", { timeout: 8000, retryCount: 0 });
 
 export function publicClient() {
   return createPublicClient({ chain: robinhoodChain, transport });
@@ -41,7 +43,7 @@ export function degenChainOk(pool: Pool) {
   return canMintOnchain(pool) && isWethPair(pool);
 }
 
-export function encodeDeployDegen(operator: string) {
+export function encodeDeployDegen(operator: string, tokens: string[] = []) {
   return encodeDeployData({
     abi: DEGEN_ABI,
     bytecode: DEGEN_BYTECODE,
@@ -50,12 +52,13 @@ export function encodeDeployDegen(operator: string) {
       CONTRACTS.weth,
       CONTRACTS.npm,
       CONTRACTS.swapRouter02,
+      tokens as `0x${string}`[],
     ],
   });
 }
 
 export function encodeExit() {
-  return encodeFunctionData({ abi: DEGEN_ABI, functionName: "exit" });
+  return encodeFunctionData({ abi: DEGEN_ABI, functionName: "exitNoSwap" });
 }
 
 export function encodeDeposit() {
@@ -241,7 +244,11 @@ export async function verifyVault(vault: string, owner: string, keeper: string) 
 
 export async function waitArmReceipt(hash: Hex) {
   const client = publicClient();
-  const receipt = await client.waitForTransactionReceipt({ hash });
+  const receipt = await client.waitForTransactionReceipt({
+    hash,
+    confirmations: 2,
+    timeout: 40_000,
+  });
   if (receipt.status !== "success") throw new Error("The arm transaction reverted.");
   const vault = receipt.contractAddress;
   if (!vault) throw new Error("The transaction confirmed without creating a vault.");
@@ -314,8 +321,8 @@ async function estimateUnwind(vault: `0x${string}`, state: Awaited<ReturnType<ty
   return { wethAmount, otherAmount, otherToken };
 }
 
-export async function operatorRebalance(args: {
-  operatorPk: Hex;
+export async function prepareRebalance(args: {
+  operator: `0x${string}`;
   vault: string;
   pool: Pool;
 }) {
@@ -354,18 +361,149 @@ export async function operatorRebalance(args: {
     amountIn: wethAfterExit / 2n,
   });
 
-  const account = privateKeyToAccount(args.operatorPk);
-  const wallet = createWalletClient({
-    account,
-    chain: robinhoodChain,
-    transport,
-  });
   const data = rebalanceCalldata(args.pool, minOutExit, minOutEnter);
-  // Dry-run first: a revert costs the keeper nothing and never reaches the chain.
-  await client.call({ account: account.address, to: vault, data });
-  const hash = await wallet.sendTransaction({ to: vault, data, chain: robinhoodChain });
-  const receipt = await client.waitForTransactionReceipt({ hash });
-  if (receipt.status !== "success") throw new Error("The on-chain hop reverted.");
+  await client.call({ account: args.operator, to: vault, data });
+  const gas = await client.estimateGas({ account: args.operator, to: vault, data });
+  const gasPrice = await client.getGasPrice();
+  return {
+    data,
+    gas: (gas * 12n) / 10n,
+    gasCostEth: Number(formatEther((gas * gasPrice * 15n) / 10n)),
+  };
+}
+
+export async function vaultVersion(vault: string) {
+  return publicClient()
+    .readContract({ address: vault as Hex, abi: DEGEN_ABI, functionName: "VERSION" })
+    .catch(() => 1n);
+}
+
+/** Conservative executable exit quote: includes LP principal and already owed fees.
+ * Newly accrued fees may be understated, never presented as guaranteed proceeds. */
+export async function valueVault(vault: string) {
+  const state = await readVault(vault);
+  const unwind = await estimateUnwind(vault as Hex, state);
+  const minOut =
+    unwind.otherToken && unwind.otherAmount > 0n
+      ? await quoteMinOut({
+          tokenIn: unwind.otherToken,
+          tokenOut: CONTRACTS.weth,
+          fee: state.fee,
+          amountIn: unwind.otherAmount,
+        })
+      : 0n;
+  const minTotal = unwind.wethAmount + minOut;
+  return { state, minOut, minTotal, valueEth: Number(formatEther(minTotal)) };
+}
+
+export async function prepareExit(vault: string, operator = false) {
+  if ((await vaultVersion(vault)) !== 2n)
+    throw new Error("Legacy vault: use the raw-token withdrawal");
+  const quote = await valueVault(vault);
+  if (quote.minTotal === 0n) throw new VaultEmptyError();
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 120);
+  const data = encodeFunctionData({
+    abi: DEGEN_ABI,
+    functionName: operator ? "exitToWeth" : "exitProtected",
+    args: [quote.minOut, quote.minTotal, deadline],
+  });
+  const account = (operator ? quote.state.operator : quote.state.owner) as Hex;
+  await publicClient().call({ account, to: vault as Hex, data });
+  const gas = await publicClient().estimateGas({ account, to: vault as Hex, data });
+  return {
+    data,
+    gas: (gas * 12n) / 10n,
+    minimumEth: quote.valueEth,
+    expiresAt: Number(deadline) * 1000,
+  };
+}
+
+export async function verifyPool(pool: Pool) {
+  if (!degenChainOk(pool)) throw new Error("Only v3 WETH pairs supported");
+  const result = await publicClient().readContract({
+    address: CONTRACTS.v3Factory,
+    abi: [
+      {
+        type: "function",
+        name: "getPool",
+        stateMutability: "view",
+        inputs: [
+          { type: "address", name: "a" },
+          { type: "address", name: "b" },
+          { type: "uint24", name: "fee" },
+        ],
+        outputs: [{ type: "address" }],
+      },
+    ] as const,
+    functionName: "getPool",
+    args: [pool.tokenA.address as Hex, pool.tokenB.address as Hex, feeToPips(pool.feePct)],
+  });
+  if (result.toLowerCase() !== pool.id.toLowerCase() || result === zeroAddress)
+    throw new Error("Pool factory mismatch");
+}
+
+/** No transaction is sent. Uses synthetic balance only inside eth_call. */
+export async function probeRoundTrip(pool: Pool, amount: bigint) {
+  await verifyPool(pool);
+  const token =
+    pool.tokenA.address.toLowerCase() === CONTRACTS.weth.toLowerCase()
+      ? pool.tokenB.address
+      : pool.tokenA.address;
+  const range = rangeFromPreset(pool.priceUsd || 1, "full", pool.feePct);
+  const data = encodeDeployData({
+    abi: PROBE_ABI,
+    bytecode: PROBE_BYTECODE,
+    args: [
+      CONTRACTS.weth,
+      CONTRACTS.npm,
+      CONTRACTS.swapRouter02,
+      token as Hex,
+      feeToPips(pool.feePct),
+      range.tickLower,
+      range.tickUpper,
+    ],
+  });
+  // Fixed non-user address; overridden balance exists for this single simulation.
+  const account = "0x000000000000000000000000000000000000bEEF" as const;
+  const result = await publicClient().call({
+    account,
+    data,
+    value: amount + OPERATOR_STIPEND,
+    gas: 12_000_000n,
+    stateOverride: [{ address: account, balance: parseEther("100") }],
+  });
+  if (!result.data || result.data.length !== 66)
+    throw new Error("Round-trip simulation returned no valuation");
+  const recovered = BigInt(result.data);
+  if (recovered < (amount * 97n) / 100n) throw new Error("Round-trip loses more than 3%");
+  return { lossEth: Number(formatEther(amount > recovered ? amount - recovered : 0n)) };
+}
+
+/** Write the signed transaction hash to durable storage BEFORE broadcast. A crash
+ * at any point leaves an intent to reconcile, never an excuse to send again. */
+export async function broadcastPrepared(args: {
+  pk: Hex;
+  vault: string;
+  data: Hex;
+  gas: bigint;
+  beforeBroadcast: (hash: Hex) => Promise<void>;
+}) {
+  const client = publicClient();
+  const account = privateKeyToAccount(args.pk);
+  const wallet = createWalletClient({ account, chain: robinhoodChain, transport });
+  const request = await wallet.prepareTransactionRequest({
+    to: args.vault as Hex,
+    data: args.data,
+    gas: args.gas,
+  });
+  const maxFee = request.maxFeePerGas ?? request.gasPrice ?? (await client.getGasPrice());
+  const balance = await client.getBalance({ address: account.address });
+  if (balance < args.gas * maxFee * 3n)
+    throw new Error("Keeper gas reserve cannot cover this transaction plus two exits");
+  const signed = await wallet.signTransaction(request);
+  const hash = keccak256(signed);
+  await args.beforeBroadcast(hash);
+  await client.sendRawTransaction({ serializedTransaction: signed });
   return hash;
 }
 

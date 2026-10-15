@@ -23,7 +23,9 @@ async function discover(): Promise<WcProvider | null> {
   window.removeEventListener("eip6963:announceProvider", onAnnounce);
   if (found.length) {
     const preferred =
-      found.find((d) => d.info.rdns === "io.metamask") ?? found.find((d) => d.info.rdns === "io.rabby") ?? found[0];
+      found.find((d) => d.info.rdns === "io.metamask") ??
+      found.find((d) => d.info.rdns === "io.rabby") ??
+      found[0];
     return preferred.provider;
   }
   return (window as unknown as { ethereum?: WcProvider }).ethereum ?? null;
@@ -32,7 +34,10 @@ async function discover(): Promise<WcProvider | null> {
 async function wc(): Promise<WcProvider> {
   if (provider) return provider;
   const p = await discover();
-  if (!p) throw new Error("No browser wallet found. Install MetaMask or Rabby, or open Perch inside your wallet's browser.");
+  if (!p)
+    throw new Error(
+      "No browser wallet found. Install MetaMask or Rabby, or open Perch inside your wallet's browser.",
+    );
   provider = p;
   return p;
 }
@@ -99,7 +104,10 @@ export const useWallet = create<WalletState>((set, get) => ({
       }
       const accounts = ((await p.request({ method: "eth_requestAccounts" })) as string[]) ?? [];
       const chainRaw = (await p.request({ method: "eth_chainId" })) as string;
-      const chainId = Number.parseInt(String(chainRaw), String(chainRaw).startsWith("0x") ? 16 : 10);
+      const chainId = Number.parseInt(
+        String(chainRaw),
+        String(chainRaw).startsWith("0x") ? 16 : 10,
+      );
       set({
         address: accounts[0] ?? null,
         chainId: Number.isFinite(chainId) ? chainId : null,
@@ -140,6 +148,9 @@ export const useWallet = create<WalletState>((set, get) => ({
     const p = await wc();
     const { address } = get();
     if (!address) throw new Error("Wallet not connected");
+    const chain = await p.request({ method: "eth_chainId" });
+    if (Number(chain) !== ROBINHOOD_CHAIN_ID)
+      throw new Error("Switch to Robinhood Chain before sending a transaction.");
     const params: Record<string, string> = {
       from: address,
       data: tx.data,
@@ -167,7 +178,11 @@ export const useWallet = create<WalletState>((set, get) => ({
         method: "eth_getTransactionReceipt",
         params: [hash],
       })) as TxReceipt | null;
-      if (raw) return raw;
+      if (raw) {
+        if (raw.status !== "0x1")
+          throw new Error("The transaction reverted. Funds were not withdrawn.");
+        return raw;
+      }
       await sleep(1500);
     }
     throw new Error("The transaction has not confirmed yet.");

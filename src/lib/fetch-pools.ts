@@ -113,6 +113,7 @@ async function geckoJson(path: string) {
   let lastErr: Error | null = null;
   for (let i = 0; i < 4; i++) {
     const res = await fetch(`${GECKO}${path}`, {
+      signal: AbortSignal.timeout(5000),
       headers: {
         Accept: "application/json",
         "User-Agent": "PerchLiquidityDesk/1.0",
@@ -226,3 +227,13 @@ export const getPoolById = createServerFn({ method: "GET" })
       return local ?? null;
     }
   });
+
+/** Trading never consumes CATALOG, merged UI caches, or a stale fallback. */
+export async function loadTradingPools() {
+  const fetchedAt = Date.now();
+  const pools = onlyUniswap(await fetchPath(
+    `/networks/robinhood/dexes/uniswap-v3-robinhood/pools?page=1&order=h24_volume_usd_desc&${INCLUDE}`,
+  ));
+  if (!pools.length) throw new Error("No fresh trading pools available");
+  return { pools, fetchedAt };
+}

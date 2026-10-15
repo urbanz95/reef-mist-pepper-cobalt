@@ -1,0 +1,24 @@
+name: Validate Degen
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/compile-degen.mjs
+      - run: git diff --exit-code -- src/lib/degen-artifact.ts src/lib/degen-probe-artifact.ts
+      - run: npm run test:degen
+      - run: npm run typecheck
+      - run: npm run build
