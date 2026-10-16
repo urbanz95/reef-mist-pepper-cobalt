@@ -5,6 +5,10 @@ import { POLICY } from "../../src/lib/degen-policy.ts";
 import { CONTRACTS } from "../../src/lib/chain.ts";
 import { discover, currentPool, chainSnapshot, samplePool } from "./market.mjs";
 
+import { createPublisher } from "./publish.mjs";
+import { paperReportSchema } from "../../src/lib/paper-report.ts";
+const publish = createPublisher();
+
 const duration = Number(process.env.PAPER_DURATION_MINUTES ?? 240);
 if (!Number.isFinite(duration) || duration < 0.25 || duration > 300)
   throw new Error("Duration must be 0.25–300 minutes");
@@ -18,6 +22,11 @@ if (tokens.length > 4 || !tokens.length || tokens.some((t) => !/^0x[0-9a-f]{40}$
 const directory = resolve(process.env.PAPER_OUTPUT_DIR ?? "paper-results");
 await mkdir(directory, { recursive: true });
 const run = {
+  version: 1,
+  runId: process.env.GITHUB_RUN_ID ?? "0",
+  operations: [],
+  decisions: [],
+  equity: [],
   startedAt: new Date().toISOString(),
   finishedAt: null,
   status: "running",
@@ -53,11 +62,13 @@ process.on("SIGINT", () => {
 let feed = null,
   lastFeedAttempt = 0;
 const deadline = Date.now() + duration * 60000;
-async function save() {
+async function save(final = false) {
   const report = {
     ...run,
+    updatedAt: new Date().toISOString(),
     netVsHoldingEth: run.books.map((b) => (b.value === null ? null : b.value - b.initial)),
   };
+  await publish(paperReportSchema.parse(report), final);
   await writeFile(join(directory, "report.json.tmp"), JSON.stringify(report, null, 2));
   await rename(join(directory, "report.json.tmp"), join(directory, "report.json"));
   const rows = run.books
@@ -141,6 +152,7 @@ try {
         const result = stepLiveBook(book, points, Date.now());
         run.books[index] = result.book;
         record.decisions.push({
+          from: book.state.current,
           capital: book.initial,
           action: result.decision.action,
           reason: result.decision.reason,
@@ -169,6 +181,11 @@ try {
     run.samples++;
     run.errors += errors.length;
     run.latest = record;
+    const decisions = record.decisions.map((d) => ({ ...d, at: record.at }));
+    run.decisions = [...run.decisions, ...decisions].slice(-60);
+    run.operations.push(...decisions.filter((d) => ["enter", "hop", "exit"].includes(d.action)));
+    run.equity.push({ at: record.at, values: run.books.map((b) => b.value) });
+    run.equity = run.equity.slice(-1200);
     await appendFile(join(directory, "samples.ndjson"), JSON.stringify(record) + "\n");
     await save();
     console.log(
@@ -190,5 +207,5 @@ try {
   }
 } finally {
   run.finishedAt = new Date().toISOString();
-  await save();
+  await save(true);
 }

@@ -53,3 +53,22 @@ For development, npm run test:paper:live runs the same observer. Optional
 variables: PAPER_DURATION_MINUTES (0.25–300), PAPER_CAPITALS (1–3 balances,
 each >0 and ≤0.5 ETH), PAPER_TOKEN_ADDRESSES (1–4 paper-only addresses), and
 PAPER_OUTPUT_DIR. Never supply a private key.
+
+## In-app results
+
+Open Degen → Cloud test results. Select a virtual balance to see estimated PnL,
+modeled fees, charged costs, simulated operations, and recent decisions. No-entry
+runs explicitly say that the exit logic was not exercised. Unknown valuations
+are never displayed as zero.
+
+The runner publishes a validated public snapshot at most once a minute to the
+paper-reports branch. The app reads it without credentials. Publication and CDN
+caching may delay visibility; snapshots show their timestamp and running reports
+older than three minutes are marked delayed. Completed snapshots retain their
+actual finish status. Each new run replaces the dashboard snapshot; historical
+full reports remain in Actions artifacts.
+
+The workflow needs contents: write solely to publish these public experiment
+results using its temporary GitHub token. Production secrets are not used.
+Publication runs asynchronously so a slow GitHub request does not stall market
+observations. A final flush completes before artifact upload.
