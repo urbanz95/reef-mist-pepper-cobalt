@@ -18,7 +18,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node scripts/compile-degen.mjs
-      - run: git diff --exit-code -- src/lib/degen-artifact.ts src/lib/degen-probe-artifact.ts
+      - run: git diff --exit-code -- src/lib/degen-artifact.ts src/lib/degen-probe-artifact.ts src/lib/degen-paper-probe-artifact.ts
       - run: npm run test:degen
       - run: npm run typecheck
       - run: npm run build

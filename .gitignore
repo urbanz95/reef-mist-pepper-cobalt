@@ -11,3 +11,6 @@ dist
 screenshots
 .DS_Store
 .neon
+
+# Local live-data paper reports (cloud runs upload these as artifacts)
+paper-results/
