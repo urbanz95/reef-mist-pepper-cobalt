@@ -1,0 +1,46 @@
+name: Live-market paper test
+on:
+  schedule:
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "Real observation time in minutes (1–300; no real funds)"
+        default: "240"
+        required: true
+      capitals:
+        description: "Virtual ETH balances (1–3 amounts, each up to 0.5 ETH)"
+        default: "0.00045,0.1"
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: live-market-paper-test
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 315
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Observe real markets without sending transactions
+        env:
+          PAPER_DURATION_MINUTES: ${{ inputs.duration_minutes || '240' }}
+          PAPER_CAPITALS: ${{ inputs.capitals || '0.00045,0.1' }}
+          PAPER_OUTPUT_DIR: paper-results
+        run: node scripts/live-paper/run.mjs
+      - name: Save report and timestamped observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-paper-${{ github.run_id }}
+          path: paper-results/
+          retention-days: 14
+          if-no-files-found: warn
