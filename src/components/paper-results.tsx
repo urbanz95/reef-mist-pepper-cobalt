@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   PAPER_REPORT_URL,
+  newerPaperReport,
   paperReportSchema,
   paperReportStale,
   type PaperReport,
@@ -33,7 +34,7 @@ export function PaperResults() {
           );
         const parsed = paperReportSchema.parse(await response.json());
         if (!controller.signal.aborted) {
-          setReport(parsed);
+          setReport((current) => newerPaperReport(current, parsed));
           setError("");
         }
       } catch (e) {
@@ -140,7 +141,7 @@ export function PaperResults() {
           </dl>
           <p className="mt-3 break-all text-sm">
             Position: {pool(book.state.current)} ·{" "}
-            {book.state.halted ? "Risk stop latched" : "Strategy monitoring"}
+            {book.state.halted ? "Risk stop latched" : "No active risk stop"}
           </p>
           <p className="mt-2 text-xs text-muted">
             {report.samples} observations · {report.verifiedQuotes} buy/sell probes (not trades) ·{" "}

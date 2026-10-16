@@ -40,6 +40,13 @@ export const paperReportSchema = z.object({
   equity: z.array(z.object({ at: z.string(), values: z.array(amount.nullable()) })),
 });
 export type PaperReport = z.infer<typeof paperReportSchema>;
+export function newerPaperReport(current: PaperReport | null, next: PaperReport) {
+  if (!current) return next;
+  const order = Date.parse(next.startedAt) - Date.parse(current.startedAt);
+  return order > 0 || (order === 0 && Date.parse(next.updatedAt) >= Date.parse(current.updatedAt))
+    ? next
+    : current;
+}
 export const PAPER_REPORT_URL =
   "https://raw.githubusercontent.com/urbanz95/reef-mist-pepper-cobalt/paper-reports/latest.json";
 export function paperReportStale(report: PaperReport, now: number) {
