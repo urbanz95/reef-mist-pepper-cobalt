@@ -177,3 +177,21 @@ it("carry48 refuses a recent falling price and does not count missing samples as
   const long = stepLiveBook(missing.book, [], now + 60000);
   assert.equal(long.book.state.challenger, null);
 });
+
+it('profitable carry exits permit a later cycle while position PnL reconciles to the book',()=>{
+ let book=newLiveBook(.1,'carry48');
+ for(let i=0;i<24;i++)book=stepLiveBook(book,[point(start+i*15000)],start+i*15000).book;
+ const now=book.lastAt+15000;
+ const result=stepLiveBook(book,[point(now,{priceEth:1.01})],now);
+ assert.equal(result.decision.action,'exit');assert.equal(result.book.state.halted,false);
+ assert.equal(result.book.ledger.length,1);assert.ok(result.book.ledger[0].exitAt);
+ assert.ok(Math.abs(result.book.ledger[0].pnlEth-(result.book.value-.1))<1e-12);
+ assert.equal(stepLiveBook(result.book,[point(now+15000)],now+15000).decision.reason,'Minimum holding period');
+ book=result.book;
+ for(let i=0;i<24;i++){
+  const at=now+31*60000+i*15000;book=stepLiveBook(book,[point(at)],at).book;
+ }
+ assert.ok(book.position);assert.equal(book.ledger.length,2);
+ assert.equal(book.ledger.filter(t=>!t.exitAt).length,1);
+ assert.ok(Math.abs(book.ledger.reduce((sum,t)=>sum+t.pnlEth,0)-(book.value-.1))<1e-12);
+});
