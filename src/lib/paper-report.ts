@@ -1,3 +1,4 @@
+import { paperTradeSchema } from "./paper-ledger.ts";
 import { z } from "zod";
 
 const amount = z.number().finite();
@@ -36,6 +37,23 @@ export const paperReportSchema = z.object({
     )
     .min(1)
     .max(3),
+  trades: z.array(paperTradeSchema).optional(),
+  segment: z.number().optional(),
+  segments: z.number().optional(),
+  poolCoverage: z
+    .array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        token: z.string(),
+        tvlUsd: z.number(),
+        observations: z.number(),
+        probes: z.number(),
+        failures: z.number(),
+        lastReason: z.string(),
+      }),
+    )
+    .optional(),
   operations: z.array(paperDecisionSchema),
   decisions: z.array(paperDecisionSchema),
   equity: z.array(z.object({ at: z.string(), values: z.array(amount.nullable()) })),
@@ -51,5 +69,8 @@ export function newerPaperReport(current: PaperReport | null, next: PaperReport)
 export const PAPER_REPORT_URL =
   "https://raw.githubusercontent.com/urbanz95/reef-mist-pepper-cobalt/paper-reports/latest.json";
 export function paperReportStale(report: PaperReport, now: number) {
-  return report.status === "running" && now - Date.parse(report.updatedAt) > 180000;
+  return (
+    ["running", "segment_complete"].includes(report.status) &&
+    now - Date.parse(report.updatedAt) > 180000
+  );
 }

@@ -5,16 +5,25 @@ on:
   workflow_dispatch:
     inputs:
       duration_minutes:
-        description: "Real observation time in minutes (1–300; no real funds)"
+        description: "Minutes per segment (1–300; overnight uses two segments)"
         default: "240"
         required: true
+      overnight:
+        description: "Run two consecutive segments with the same balances (8 hours by default)"
+        type: boolean
+        default: true
       strategy:
-        description: "Paper strategy (baseline or carry48; experimental, no real money)"
+        description: "Paper strategy"
         type: choice
         options: [baseline, carry48]
         default: carry48
+      universe:
+        description: "Discovered WETH pools, or USDG-only control"
+        type: choice
+        options: [discovered, tokens]
+        default: discovered
       capitals:
-        description: "Virtual ETH balances (1–3 amounts, each up to 0.5 ETH)"
+        description: "Independent virtual ETH balances (1–3 amounts, each up to 0.5 ETH)"
         default: "0.1,0.5"
         required: true
 permissions:
@@ -23,31 +32,23 @@ concurrency:
   group: live-market-paper-test
   cancel-in-progress: false
 jobs:
-  observe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 315
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - name: Observe real markets without sending transactions
-        env:
-          PAPER_STRATEGY: ${{ inputs.strategy || 'carry48' }}
-          PAPER_REPORT_TOKEN: ${{ github.token }}
-          PAPER_DURATION_MINUTES: ${{ inputs.duration_minutes || '240' }}
-          PAPER_CAPITALS: ${{ inputs.capitals || '0.1,0.5' }}
-          PAPER_OUTPUT_DIR: paper-results
-        run: node scripts/live-paper/run.mjs
-      - name: Save report and timestamped observations
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: live-paper-${{ github.run_id }}
-          path: paper-results/
-          retention-days: 14
-          if-no-files-found: warn
+  first-half:
+    uses: ./.github/workflows/paper-segment.yml
+    with:
+      duration: ${{ inputs.duration_minutes || '240' }}
+      strategy: ${{ inputs.strategy || 'carry48' }}
+      capitals: ${{ inputs.capitals || '0.1,0.5' }}
+      universe: ${{ inputs.universe || 'discovered' }}
+      segment: 1
+      segments: ${{ (github.event_name == 'schedule' || inputs.overnight) && 2 || 1 }}
+  second-half:
+    needs: first-half
+    if: github.event_name == 'schedule' || inputs.overnight
+    uses: ./.github/workflows/paper-segment.yml
+    with:
+      duration: ${{ inputs.duration_minutes || '240' }}
+      strategy: ${{ inputs.strategy || 'carry48' }}
+      capitals: ${{ inputs.capitals || '0.1,0.5' }}
+      universe: ${{ inputs.universe || 'discovered' }}
+      segment: 2
+      segments: 2

@@ -2,7 +2,7 @@
 
 [Open cloud runs and reports](https://github.com/urbanz95/reef-mist-pepper-cobalt/actions/workflows/live-paper.yml).
 
-The **Live-market paper test** workflow runs for four hours daily at 00:17 UTC,
+The **Live-market paper test** workflow runs for eight hours daily at 00:17 UTC (two four-hour segments),
 and can be started using **Run workflow**. The computer and browser can be off.
 GitHub can delay scheduled starts. This is a bounded experiment, not a continuous
 production keeper. Standard GitHub-hosted runners are free for this public repository.
@@ -10,8 +10,9 @@ production keeper. Standard GitHub-hosted runners are free for this public repos
 Scheduled virtual balances are 0.1 ETH and 0.5 ETH using the experimental carry48
 profile; select baseline in Run workflow for the six-hour control. See
 [carry experiment](carry-experiment.md) for assumptions and the negative development
-replay result. Every run starts fresh.
+replay result. Every run starts fresh; the second overnight segment continues the same books.
 Observations target 15-second intervals; slow requests can extend them.
+See [overnight report](overnight-report.md) for per-position tables, CSV exports and checkpoint continuation.
 The report records monitoring gaps and the shared keeper policy blocks entries
 without sufficiently frequent observations.
 
@@ -23,7 +24,7 @@ a buy → LP entry → LP exit → sell using eth_call with a temporary balance
 override. No state is committed. A transport allowlist rejects signing and
 transaction broadcasting methods. No keeper key, wallet, database or secret is needed.
 
-Only USDG/WETH pools are selected by default. Token selection replaces the
+Multiple discovered WETH pools are screened by default; a USDG-only control is selectable. Token selection replaces the
 manual-review gate **for this experiment only**; it is not a security approval.
 Production settings and the live-trading switch are unchanged.
 

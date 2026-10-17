@@ -23,10 +23,10 @@ confirmation. Missing prices remain unknown and do not accrue modeled fees.
 
 Exit is attempted when estimated value after exit costs exceeds both initial
 capital and entry account value by at least max(0.1% initial capital, two current
-round-trip cost estimates), or after 48 hours in the position. Successful exits
-latch the stop for the remainder of the experiment, avoiding immediate re-entry.
+round-trip cost estimates), or after 48 hours in the position. Risk exits latch the stop. Profit exits allow re-entry after a 30-minute cooldown,
+subject to the rolling daily entry limit.
 
-The cloud experiment is bounded to at most five hours. A four-hour run tests
+The overnight experiment runs in two four-hour segments with checkpoint continuation. An overnight run tests
 initial behavior, NOT the full 48-hour hypothesis. An open position at the end
 is unrealized, not a profitable completed trade. The 48-hour timeout and profit
 exit are exercised with deterministic regression tests; long holding periods

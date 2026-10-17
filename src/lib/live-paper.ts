@@ -7,6 +7,7 @@ import {
   type Candidate,
   type PolicyState,
 } from "./degen-policy.ts";
+import { recordPaperTrade, type PaperTrade } from "./paper-ledger.ts";
 export type MarketPoint = Candidate & {
   priceEth: number;
   fetchedAt: number;
@@ -27,6 +28,7 @@ export type LiveBook = {
   prices?: { id: string; at: number; price: number }[];
   enteredAt?: number;
   entryAccountValue?: number;
+  ledger?: PaperTrade[];
 };
 export function newLiveBook(
   initial: number,
@@ -113,9 +115,15 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
     candidates: acceptable.map((p) => ({ ...p, costEth: p.costEth + (current?.exitCostEth ?? 0) })),
     paperHorizonHours: carry ? 48 : undefined,
   });
-  if (carry && fresh.length && !acceptable.length && decision.action === "wait" &&
-      decision.reason === "Estimated fees do not cover costs with a safety margin") {
-    decision.reason = "Paper carry: awaiting stable price history or rejecting a recent 1% drawdown";
+  if (
+    carry &&
+    fresh.length &&
+    !acceptable.length &&
+    decision.action === "wait" &&
+    decision.reason === "Estimated fees do not cover costs with a safety margin"
+  ) {
+    decision.reason =
+      "Paper carry: awaiting stable price history or rejecting a recent 1% drawdown";
   }
   // Preserve only recent confirmation evidence through one missing feed sample.
   // No observation is counted and no entry is permitted until fresh quotes return.
@@ -167,6 +175,14 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
     book.cash = value - charged;
     book.position = null;
     book.state = settled(book.state, decision, now, book.cash);
+    // A profitable close may re-enter after the cooldown. Risk stops remain latched.
+    if (
+      carry &&
+      !previous.state.halted &&
+      decision.reason === "Paper carry: net profit target reached"
+    ) {
+      book.state = { ...book.state, halted: false, lastTradeAt: now };
+    }
     value = book.cash;
   } else if (
     (decision.action === "enter" || decision.action === "hop") &&
@@ -191,5 +207,17 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
   book.costs += charged;
   book.value = value;
   book.lastAt = now;
+  book.ledger = recordPaperTrade(
+    previous.ledger ?? [],
+    book.initial,
+    decision.action,
+    now,
+    value,
+    book.fees,
+    fresh.find((p) => p.id === decision.target?.id),
+    previous.value ?? previous.initial,
+    current?.exitCostEth ?? 0,
+    decision.reason,
+  );
   return { book, decision, charged };
 }

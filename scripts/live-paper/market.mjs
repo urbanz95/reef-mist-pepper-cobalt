@@ -90,13 +90,22 @@ async function feed(path) {
   const age = Number(res.headers.get("age") ?? 0);
   if (!Number.isFinite(age) || age < 0) throw new Error("Invalid provider cache age");
   return {
-    pools: normalizePools(await res.json()),
+    pools: normalizePools(await res.json()).map((p) => ({ ...p, fetchedAt: started - age * 1000 })),
     fetchedAt: started - age * 1000,
     providerAgeSec: age,
   };
 }
 export async function discover() {
-  return feed("/dexes/uniswap-v3-robinhood/pools?page=1&include=base_token,quote_token");
+  const pages = [];
+  for (const page of [1, 2, 3])
+    pages.push(
+      await feed(`/dexes/uniswap-v3-robinhood/pools?page=${page}&include=base_token,quote_token`),
+    );
+  return {
+    pools: [...new Map(pages.flatMap((p) => p.pools).map((p) => [p.id, p])).values()],
+    fetchedAt: Math.min(...pages.map((p) => p.fetchedAt)),
+    providerAgeSec: Math.max(...pages.map((p) => p.providerAgeSec)),
+  };
 }
 export async function currentPool(id) {
   if (!/^0x[0-9a-f]{40}$/i.test(id)) throw new Error("Invalid pool address");
