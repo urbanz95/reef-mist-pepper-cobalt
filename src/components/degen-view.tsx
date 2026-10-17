@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { encodeFunctionData } from "viem";
 import { Button } from "./ui/button";
+import { PaperResults } from "./paper-results";
 import { DegenSimulator } from "./degen-simulator";
 import {
   confirmDegenArm,
@@ -244,6 +245,7 @@ export function DegenView() {
             : ready.reason}
         </p>
       </section>
+      <PaperResults />
       <DegenSimulator />
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <section className="rounded-xl bg-surface p-5 shadow-[var(--shadow-border)]">

@@ -13,7 +13,7 @@ on:
         default: "0.00045,0.1"
         required: true
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: live-market-paper-test
   cancel-in-progress: false
@@ -32,6 +32,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Observe real markets without sending transactions
         env:
+          PAPER_REPORT_TOKEN: ${{ github.token }}
           PAPER_DURATION_MINUTES: ${{ inputs.duration_minutes || '240' }}
           PAPER_CAPITALS: ${{ inputs.capitals || '0.00045,0.1' }}
           PAPER_OUTPUT_DIR: paper-results
