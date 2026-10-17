@@ -140,7 +140,7 @@ export function PaperResults() {
             ))}
           </dl>
           <p className="mt-3 break-all text-sm">
-            Position: {pool(book.state.current)} ·{" "}
+            Strategy: {book.strategy ?? "baseline"} · Position: {pool(book.state.current)} ·{" "}
             {book.state.halted ? "Risk stop latched" : "No active risk stop"}
           </p>
           <p className="mt-2 text-xs text-muted">

@@ -12,6 +12,8 @@ const publish = createPublisher();
 const duration = Number(process.env.PAPER_DURATION_MINUTES ?? 240);
 if (!Number.isFinite(duration) || duration < 0.25 || duration > 300)
   throw new Error("Duration must be 0.25–300 minutes");
+const strategy = process.env.PAPER_STRATEGY ?? "baseline";
+if (!["baseline", "carry48"].includes(strategy)) throw new Error("Unknown paper strategy");
 const capitals = (process.env.PAPER_CAPITALS ?? "0.00045,0.1").split(",").map(Number);
 if (capitals.length < 1 || capitals.length > 3) throw new Error("Use 1–3 virtual balances");
 const tokens = (process.env.PAPER_TOKEN_ADDRESSES ?? CONTRACTS.usdg)
@@ -37,11 +39,12 @@ const run = {
   durationMinutes: duration,
   intervalSeconds: 15,
   paperTokens: tokens,
-  books: capitals.map(newLiveBook),
+  books: capitals.map((capital) => newLiveBook(capital, strategy)),
   actions: {},
   reasons: {},
   latest: null,
   assumptions: [
+    "Carry48 is an experimental 48-hour fee horizon with a recent-price drawdown filter, net profit exit and maximum hold. It does not predict or guarantee profit. Baseline uses six hours.",
     "Real chain prices, gas price and provider TVL/24h volume; no static catalogue or invented market prices.",
     "Paper token selection substitutes the manual-review gate ONLY in this experiment. Tokens have NOT been security-audited or approved for live trading.",
     "Same decide() policy as the keeper; production configuration is untouched. No wallet key or transaction broadcast is used.",
@@ -149,9 +152,11 @@ try {
             errors.push(`${book.initial} ETH ${pool.id}: ${e.shortMessage ?? e.message}`);
           }
         }
-        const result = stepLiveBook(book, points, Date.now());
+        const observedAt = Date.now();
+        const result = stepLiveBook(book, points, observedAt);
         run.books[index] = result.book;
         record.decisions.push({
+          observedAt,
           from: book.state.current,
           capital: book.initial,
           action: result.decision.action,

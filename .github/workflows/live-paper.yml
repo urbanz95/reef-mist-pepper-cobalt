@@ -8,6 +8,11 @@ on:
         description: "Real observation time in minutes (1–300; no real funds)"
         default: "240"
         required: true
+      strategy:
+        description: "Paper strategy (baseline or carry48; experimental, no real money)"
+        type: choice
+        options: [baseline, carry48]
+        default: baseline
       capitals:
         description: "Virtual ETH balances (1–3 amounts, each up to 0.5 ETH)"
         default: "0.00045,0.1"
@@ -32,6 +37,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Observe real markets without sending transactions
         env:
+          PAPER_STRATEGY: ${{ inputs.strategy || 'baseline' }}
           PAPER_REPORT_TOKEN: ${{ github.token }}
           PAPER_DURATION_MINUTES: ${{ inputs.duration_minutes || '240' }}
           PAPER_CAPITALS: ${{ inputs.capitals || '0.00045,0.1' }}

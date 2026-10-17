@@ -26,6 +26,7 @@ export const paperReportSchema = z.object({
   books: z
     .array(
       z.object({
+        strategy: z.enum(["baseline", "carry48"]).optional(),
         initial: amount,
         value: amount.nullable(),
         fees: amount,

@@ -124,3 +124,56 @@ it("provider parsing rejects malformed / non-WETH data and has no catalog fallba
   json.data[0].attributes.reserve_in_usd = "not-a-number";
   assert.deepEqual(normalizePools(json), []);
 });
+
+it("carry48 can enter a fee opportunity rejected by six-hour economics without removing safety gates", () => {
+  let baseline = newLiveBook(0.1),
+    carry = newLiveBook(0.1, "carry48");
+  for (let i = 0; i < 24; i++) {
+    const now = start + i * 15000,
+      points = [
+        point(now, { apr: 30, costEth: 0.00003, entryCostEth: 0.00002, exitCostEth: 0.00001 }),
+      ];
+    baseline = stepLiveBook(baseline, points, now).book;
+    carry = stepLiveBook(carry, points, now).book;
+  }
+  assert.equal(baseline.position, null);
+  assert.ok(carry.position);
+  const now = carry.lastAt + 15000;
+  const profit = stepLiveBook(
+    carry,
+    [point(now, { priceEth: 1.01, costEth: 0.00003, exitCostEth: 0.00001 })],
+    now,
+  );
+  assert.equal(profit.decision.action, "exit");
+  assert.match(profit.decision.reason, /profit target/);
+  assert.ok(profit.book.value > 0.1);
+  assert.equal(profit.book.state.halted, true);
+  const timeout = stepLiveBook(
+    { ...carry, enteredAt: now - 48 * 3600000 },
+    [point(now, { exitCostEth: 0.00001 })],
+    now,
+  );
+  assert.equal(timeout.decision.action, "exit");
+  assert.match(timeout.decision.reason, /exposure limit/);
+  const unavailable = stepLiveBook(carry, [], now);
+  assert.equal(unavailable.book.value, null);
+  assert.equal(unavailable.decision.action, "blocked");
+});
+it("carry48 refuses a recent falling price and does not count missing samples as confirmations", () => {
+  let book = newLiveBook(0.1, "carry48");
+  for (let i = 0; i < 12; i++) {
+    const now = start + i * 15000;
+    book = stepLiveBook(book, [point(now, { priceEth: 1 - i * 0.002 })], now).book;
+  }
+  assert.equal(book.position, null);
+  const now = book.lastAt + 15000;
+  book.state.challenger = "pool";
+  book.state.observations = 2;
+  book.state.lastObservationAt = now - 15000;
+  book.state.challengerSince = now - 60000;
+  const missing = stepLiveBook(book, [], now);
+  assert.equal(missing.decision.action, "blocked");
+  assert.equal(missing.book.state.observations, 2);
+  const long = stepLiveBook(missing.book, [], now + 60000);
+  assert.equal(long.book.state.challenger, null);
+});
