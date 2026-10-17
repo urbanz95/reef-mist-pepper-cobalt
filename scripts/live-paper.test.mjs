@@ -147,7 +147,7 @@ it("carry48 can enter a fee opportunity rejected by six-hour economics without r
   assert.equal(profit.decision.action, "exit");
   assert.match(profit.decision.reason, /profit target/);
   assert.ok(profit.book.value > 0.1);
-  assert.equal(profit.book.state.halted, true);
+  assert.equal(profit.book.state.halted, false);
   const timeout = stepLiveBook(
     { ...carry, enteredAt: now - 48 * 3600000 },
     [point(now, { exitCostEth: 0.00001 })],

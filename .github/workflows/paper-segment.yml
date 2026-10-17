@@ -1,0 +1,62 @@
+name: Paper observation segment
+on:
+  workflow_call:
+    inputs:
+      duration:
+        type: string
+        required: true
+      strategy:
+        type: string
+        required: true
+      capitals:
+        type: string
+        required: true
+      universe:
+        type: string
+        required: true
+      segment:
+        type: number
+        required: true
+      segments:
+        type: number
+        required: true
+permissions:
+  contents: write
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 315
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Restore the first half of this overnight run
+        if: inputs.segment == 2
+        uses: actions/download-artifact@v4
+        with:
+          name: live-paper-${{ github.run_id }}-part-1
+          path: paper-results
+      - name: Observe and record simulated positions
+        env:
+          PAPER_STRATEGY: ${{ inputs.strategy }}
+          PAPER_UNIVERSE: ${{ inputs.universe }}
+          PAPER_REPORT_TOKEN: ${{ github.token }}
+          PAPER_DURATION_MINUTES: ${{ inputs.duration }}
+          PAPER_CAPITALS: ${{ inputs.capitals }}
+          PAPER_SEGMENT_INDEX: ${{ inputs.segment }}
+          PAPER_SEGMENT_COUNT: ${{ inputs.segments }}
+          PAPER_OUTPUT_DIR: paper-results
+        run: node scripts/live-paper/run.mjs
+      - name: Save full report, ledger, and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-paper-${{ github.run_id }}-part-${{ inputs.segment }}
+          path: paper-results/
+          retention-days: 14
+          if-no-files-found: error
