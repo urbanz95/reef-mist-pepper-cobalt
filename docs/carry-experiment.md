@@ -1,8 +1,9 @@
 # Cost-aware carry experiment
 
 This is a paper-only strategy hypothesis, not a profitable trading system proven by data.
-Production keeper settings and live execution remain unchanged. Baseline remains the
-scheduled default. Select carry48 in the Live-market paper test workflow to experiment.
+Production keeper settings and live execution remain unchanged. Scheduled paper tests
+now use carry48 with 0.1 and 0.5 ETH virtual balances. Baseline remains selectable
+in the workflow as the six-hour control strategy. This is not a live rollout.
 
 The baseline evaluates six hours of discounted, capped historical-volume fees.
 The recorded overnight sample required a median of roughly 43 hours at 0.1 ETH

@@ -7,7 +7,10 @@ and can be started using **Run workflow**. The computer and browser can be off.
 GitHub can delay scheduled starts. This is a bounded experiment, not a continuous
 production keeper. Standard GitHub-hosted runners are free for this public repository.
 
-Default virtual balances are 0.00045 ETH and 0.1 ETH. Every run starts fresh.
+Scheduled virtual balances are 0.1 ETH and 0.5 ETH using the experimental carry48
+profile; select baseline in Run workflow for the six-hour control. See
+[carry experiment](carry-experiment.md) for assumptions and the negative development
+replay result. Every run starts fresh.
 Observations target 15-second intervals; slow requests can extend them.
 The report records monitoring gaps and the shared keeper policy blocks entries
 without sufficiently frequent observations.
