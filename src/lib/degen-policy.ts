@@ -51,6 +51,8 @@ export type Observation = {
   currentTvlUsd: number | null;
   sellable: boolean;
   candidates: Candidate[];
+  /** Explicit paper experiment override; live callers use the six-hour default. */
+  paperHorizonHours?: 48;
 };
 export type Decision = {
   action: "wait" | "enter" | "hop" | "exit" | "blocked";
@@ -158,7 +160,7 @@ export function decide(previous: PolicyState, o: Observation): Decision {
   const edge = (c: Candidate) =>
     (((o.valueEth! * (conservativeApr(c.apr) - conservativeApr(s.current ? o.currentApr : 0))) /
       100) *
-      POLICY.horizonHours) /
+      (o.paperHorizonHours === 48 ? 48 : POLICY.horizonHours)) /
     (365 * 24);
   const best = candidates.sort((a, b) => edge(b) - b.costEth - (edge(a) - a.costEth))[0];
   if (!best || edge(best) <= best.costEth * POLICY.costMargin) {
