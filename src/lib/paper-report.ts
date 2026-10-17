@@ -69,5 +69,8 @@ export function newerPaperReport(current: PaperReport | null, next: PaperReport)
 export const PAPER_REPORT_URL =
   "https://raw.githubusercontent.com/urbanz95/reef-mist-pepper-cobalt/paper-reports/latest.json";
 export function paperReportStale(report: PaperReport, now: number) {
-  return report.status === "running" && now - Date.parse(report.updatedAt) > 180000;
+  return (
+    ["running", "segment_complete"].includes(report.status) &&
+    now - Date.parse(report.updatedAt) > 180000
+  );
 }

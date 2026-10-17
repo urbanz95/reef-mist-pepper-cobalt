@@ -144,7 +144,9 @@ export function PaperResults() {
               Status:{" "}
               {stale
                 ? "Updates delayed — run may have stopped"
-                : report.status.replaceAll("_", " ")}
+                : report.status === "segment_complete"
+                  ? "Overnight test continuing — preparing second half"
+                  : report.status.replaceAll("_", " ")}
             </span>
             <span>Snapshot: {time(report.updatedAt)}</span>
             <a
