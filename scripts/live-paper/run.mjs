@@ -213,7 +213,6 @@ try {
                 : "Live exit monitoring only; provider metadata older than ten minutes";
             }
             points.push(p);
-            record.markets.push({ capital: book.initial, ...p });
             run.verifiedQuotes++;
           } catch (e) {
             const coverage = run.poolCoverage.find((c) => c.id === pool.id);
@@ -237,6 +236,7 @@ try {
           if (coverage && p.metadataFresh)
             coverage.lastReason = `${book.initial} ETH: expected incremental fees ${economics.expectedFeesEth.toFixed(8)} ETH; required ${economics.requiredFeesEth.toFixed(8)} ETH; ${economics.feasible ? "cost margin passed" : "cost margin failed"} (other gates still apply)`;
         }
+        record.markets.push(...points.map((p) => ({ capital: book.initial, ...p })));
         const observedAt = Date.now();
         const result = stepLiveBook(book, points, observedAt);
         run.books[index] = result.book;
