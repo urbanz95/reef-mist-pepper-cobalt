@@ -6,6 +6,7 @@ import { CONTRACTS } from "../../src/lib/chain.ts";
 import { discover, currentPool, chainSnapshot, samplePool, seedProvider } from "./market.mjs";
 
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
+import { MEME_WATCHLIST, selectProbePools } from "./universe.mjs";
 import { createPublisher } from "./publish.mjs";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
@@ -66,7 +67,8 @@ let run = {
     "LP value uses a full-range constant-product approximation in ETH, not an actual NFT position.",
     "Fees are modeled from capped, discounted 24h volume APR, not measured earnings. No fees accrue across monitoring gaps.",
     "Gas budget measures entry and exit execution separately, adds 51,000 gas per leg plus 50% margin, and excludes vault deployment and any additional network data fee. Round-trip trading loss is reserved on entry; each gas leg is charged once. Estimates are not transaction receipts.",
-    "Discovery uses a shared one-request-per-65-second budget with backoff and rotates three pages. Provider volume/ETH-USD references expire for entry after ten minutes; live price/reserves and round-trip probes come from the current chain block every observation. Expired metadata cannot approve entries; existing positions still receive live exit monitoring.",
+    "Discovery shares one request per 65 seconds with backoff across three pages and direct MEME/CASHCAT pool lookups. Up to two of six probe slots are reserved for eligible watchlist pools. All liquidity, age, cost and execution gates remain mandatory; this watchlist is not comprehensive or a security approval. Provider metadata expires for entry after ten minutes; existing positions retain live exit monitoring.",
+    `Memecoin research addresses: ${MEME_WATCHLIST.map((m) => `${m.label}: token ${m.token}, pool ${m.pool}`).join("; ")}`,
     "The provider can lag despite a recent HTTP response. Missing/stale observations block entries; unknown valuations are null, never zero.",
     "A passing probe is state-specific and cannot guarantee future sellability. Results do not prove profitability or live safety.",
   ],
@@ -134,7 +136,6 @@ try {
         : null;
       const snapshot = await chainSnapshot();
       record.chain = { ...snapshot, gasPrice: String(snapshot.gasPrice) };
-      const counts = new Map();
       const ranked = (feed?.pools ?? []).sort(
         (a, b) => b.volume24h / b.tvlUsd - a.volume24h / a.tvlUsd,
       );
@@ -166,8 +167,8 @@ try {
                   ? "Provider volume metadata expired for entries"
                   : "Eligible; outside this sample's probe budget";
       }
-      let selected = ranked
-        .filter((p) => {
+      let selected = selectProbePools(
+        ranked.filter((p) => {
           if (
             (universe !== "discovered" && !tokens.includes(p.other)) ||
             p.tvlUsd < POLICY.minTvlUsd ||
@@ -175,13 +176,9 @@ try {
             start - p.fetchedAt > METADATA_MAX_AGE_MS
           )
             return false;
-          const count = counts.get(p.other) ?? 0;
-          if (count >= 2) return false;
-          counts.set(p.other, count + 1);
           return true;
-        })
-        .slice(0, 6)
-        .map((p) => ({ ...p, fetchedAt: p.fetchedAt ?? feed.fetchedAt }));
+        }),
+      ).map((p) => ({ ...p, fetchedAt: p.fetchedAt ?? feed.fetchedAt }));
       // A held pool disappearing from the discovery top page is queried directly.
       for (const id of new Set(run.books.map((b) => b.state.current).filter(Boolean))) {
         if (!selected.some((p) => p.id === id))

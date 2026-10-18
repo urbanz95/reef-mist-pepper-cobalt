@@ -1,6 +1,57 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createPoolProvider } from "./live-paper/provider.mjs";
+import { MEME_WATCHLIST, selectProbePools } from "./live-paper/universe.mjs";
+it("memecoin lookups share the discovery budget and retain timestamps across the full cycle", async () => {
+  let now = 0;
+  const calls = [];
+  const provider = createPoolProvider(
+    async (path) => {
+      calls.push(path);
+      return { pools: [{ id: path, fetchedAt: now }], fetchedAt: now, providerAgeSec: 0 };
+    },
+    () => now,
+  );
+  for (let i = 0; i < 6; i++) {
+    now = i * 65000;
+    await provider.discover();
+    await provider.discover();
+  }
+  assert.equal(calls.length, 6);
+  assert.match(calls[3], new RegExp(MEME_WATCHLIST[0].pool));
+  assert.match(calls[4], new RegExp(MEME_WATCHLIST[1].pool));
+  assert.equal(calls[5], calls[0]);
+  const snapshot = await provider.discover();
+  assert.equal(snapshot.pools.length, 5);
+  assert.equal(snapshot.pools.find((p) => p.id === calls[3]).fetchedAt, 195000);
+});
+it("eligible memecoins receive probe slots without exceeding six pools or two tiers per token", () => {
+  const ordinary = Array.from({ length: 8 }, (_, i) => ({
+    id: String(i),
+    other: String(Math.floor(i / 3)),
+  }));
+  const meme = MEME_WATCHLIST.map((m) => ({ id: m.pool, other: m.token }));
+  const selected = selectProbePools([
+    ...ordinary,
+    meme[0],
+    { ...meme[0], id: "second-tier" },
+    meme[1],
+  ]);
+  assert.equal(selected.length, 6);
+  for (const p of meme) assert.ok(selected.includes(p));
+  assert.equal(selected.filter((p) => p.other === "0").length, 2);
+  assert.ok(
+    !selectProbePools(ordinary).some((p) => meme.includes(p)),
+    "selection cannot reintroduce an ineligible pool",
+  );
+  const leaders = Array.from({ length: 6 }, (_, i) => ({ id: `leader-${i}`, other: `token-${i}` }));
+  assert.ok(
+    !selectProbePools([...leaders, { id: "fake", other: "unknown", label: "MEME" }]).some(
+      (p) => p.id === "fake",
+    ),
+    "a matching ticker cannot claim a reserved slot",
+  );
+});
 it("discovery rotates pages without bursting and keeps original timestamps", async () => {
   let now = 0;
   const calls = [];

@@ -1,3 +1,4 @@
+import { DISCOVERY_PATHS } from "./universe.mjs";
 export const METADATA_MAX_AGE_MS = 10 * 60000;
 /** Shared low-rate discovery/held-pool budget. Cached timestamps never advance. */
 export function createPoolProvider(fetchPage, now = Date.now) {
@@ -48,11 +49,9 @@ export function createPoolProvider(fetchPage, now = Date.now) {
     seed,
     async discover() {
       if (now() < nextRequest) return snapshot();
-      const result = await request(
-        `/dexes/uniswap-v3-robinhood/pools?page=${page}&include=base_token,quote_token`,
-      );
+      const result = await request(DISCOVERY_PATHS[page - 1]);
       pages.set(page, result);
-      page = (page % 3) + 1;
+      page = (page % DISCOVERY_PATHS.length) + 1;
       return { ...snapshot(), requested: true };
     },
     async currentPool(id) {
