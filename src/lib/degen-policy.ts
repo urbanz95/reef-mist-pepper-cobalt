@@ -78,6 +78,24 @@ export function initialPolicy(principalEth: number): PolicyState {
 export function conservativeApr(apr: number) {
   return Number.isFinite(apr) ? Math.max(0, Math.min(POLICY.aprCap, apr)) * POLICY.feeDiscount : 0;
 }
+export function candidateEconomics(
+  c: Candidate,
+  value: number,
+  currentApr = 0,
+  paperHorizonHours?: 48,
+) {
+  const expectedFeesEth =
+    (((value * (conservativeApr(c.apr) - conservativeApr(currentApr))) / 100) *
+      (paperHorizonHours === 48 ? 48 : POLICY.horizonHours)) /
+    (365 * 24);
+  const requiredFeesEth = c.costEth * POLICY.costMargin;
+  return {
+    expectedFeesEth,
+    requiredFeesEth,
+    netEdgeEth: expectedFeesEth - c.costEth,
+    feasible: Number.isFinite(expectedFeesEth) && expectedFeesEth > requiredFeesEth,
+  };
+}
 export function decide(previous: PolicyState, o: Observation): Decision {
   const s = { ...previous, trades: previous.trades.filter((t) => o.now - t < 86_400_000) };
   const result = (action: Decision["action"], reason: string, target?: Candidate): Decision => ({
@@ -157,13 +175,14 @@ export function decide(previous: PolicyState, o: Observation): Decision {
       Number.isFinite(c.costEth) &&
       c.costEth >= 0,
   );
-  const edge = (c: Candidate) =>
-    (((o.valueEth! * (conservativeApr(c.apr) - conservativeApr(s.current ? o.currentApr : 0))) /
-      100) *
-      (o.paperHorizonHours === 48 ? 48 : POLICY.horizonHours)) /
-    (365 * 24);
-  const best = candidates.sort((a, b) => edge(b) - b.costEth - (edge(a) - a.costEth))[0];
-  if (!best || edge(best) <= best.costEth * POLICY.costMargin) {
+  const economics = (c: Candidate) =>
+    candidateEconomics(c, o.valueEth!, s.current ? o.currentApr : 0, o.paperHorizonHours);
+  // Rank only feasible candidates: an attractive but infeasible pool must not
+  // veto a different pool that satisfies the required cost margin.
+  const best = candidates
+    .filter((c) => economics(c).feasible)
+    .sort((a, b) => economics(b).netEdgeEth - economics(a).netEdgeEth)[0];
+  if (!best) {
     reset();
     return result("wait", "Estimated fees do not cover costs with a safety margin");
   }

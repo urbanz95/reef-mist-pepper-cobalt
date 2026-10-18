@@ -14,12 +14,20 @@ export type MarketPoint = Candidate & {
   entryCostEth: number;
   exitCostEth: number;
   label: string;
+  reserveEth?: number;
+  metadataFresh?: boolean;
 };
 export type LiveBook = {
   initial: number;
   cash: number;
   state: PolicyState;
-  position: { pool: string; entryPrice: number; principal: number; fees: number } | null;
+  position: {
+    pool: string;
+    entryPrice: number;
+    principal: number;
+    fees: number;
+    reserveEthAtEntry?: number;
+  } | null;
   lastAt: number;
   fees: number;
   costs: number;
@@ -73,6 +81,7 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
   const carry = book.strategy === "carry48";
   const history = (previous.prices ?? []).filter((p) => now - p.at <= 15 * 60000);
   const acceptable = fresh.filter((p) => {
+    if (p.metadataFresh === false) return false;
     if (!carry) return true;
     const observations = history.filter((h) => h.id === p.id);
     // No entry into a one-percent drawdown from the observed 15-minute high.
@@ -95,9 +104,10 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
         current.priceEth,
       );
       // Do not fabricate fees across an observation gap or unverified exit.
-      const fees = monitoring
-        ? (((marked * conservativeApr(current.apr)) / 100) * elapsed) / (365 * 86400000)
-        : 0;
+      const fees =
+        monitoring && current.metadataFresh !== false
+          ? (((marked * conservativeApr(current.apr)) / 100) * elapsed) / (365 * 86400000)
+          : 0;
       book.position.fees += fees;
       book.fees += fees;
       value = marked + book.position.fees;
@@ -110,7 +120,12 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
     pending: false,
     valueEth: value,
     currentApr: current?.apr ?? 0,
-    currentTvlUsd: current?.tvlUsd ?? null,
+    // Compare fresh reserves in the same ETH unit, without treating a cached
+    // ETH/USD conversion change as a liquidity withdrawal.
+    currentTvlUsd:
+      current && book.position?.reserveEthAtEntry && current.reserveEth
+        ? (book.state.entryTvlUsd * current.reserveEth) / book.position.reserveEthAtEntry
+        : (current?.tvlUsd ?? null),
     sellable: value !== null,
     candidates: acceptable.map((p) => ({ ...p, costEth: p.costEth + (current?.exitCostEth ?? 0) })),
     paperHorizonHours: carry ? 48 : undefined,
@@ -124,6 +139,15 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
   ) {
     decision.reason =
       "Paper carry: awaiting stable price history or rejecting a recent 1% drawdown";
+  }
+  if (
+    fresh.length &&
+    fresh.every((p) => p.metadataFresh === false) &&
+    decision.action === "wait" &&
+    !book.position
+  ) {
+    decision.reason =
+      "Provider volume/reference metadata expired; live quotes available but no new entry";
   }
   // Preserve only recent confirmation evidence through one missing feed sample.
   // No observation is counted and no entry is permitted until fresh quotes return.
@@ -197,6 +221,7 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
       entryPrice: target.priceEth,
       principal: value - charged,
       fees: 0,
+      reserveEthAtEntry: target.reserveEth,
     };
     book.enteredAt = now;
     book.entryAccountValue = value;
