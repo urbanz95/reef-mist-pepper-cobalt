@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createPoolProvider } from "./live-paper/provider.mjs";
-import { MEME_WATCHLIST, selectProbePools } from "./live-paper/universe.mjs";
-it("memecoin lookups share the discovery budget and retain timestamps across the full cycle", async () => {
+import { selectProbePools } from "./live-paper/universe.mjs";
+it("new, trending and PONS discovery share the rate budget across the full cycle", async () => {
   let now = 0;
   const calls = [];
   const provider = createPoolProvider(
@@ -12,45 +12,42 @@ it("memecoin lookups share the discovery budget and retain timestamps across the
     },
     () => now,
   );
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 7; i++) {
     now = i * 65000;
     await provider.discover();
     await provider.discover();
   }
-  assert.equal(calls.length, 6);
-  assert.match(calls[3], new RegExp(MEME_WATCHLIST[0].pool));
-  assert.match(calls[4], new RegExp(MEME_WATCHLIST[1].pool));
-  assert.equal(calls[5], calls[0]);
+  assert.equal(calls.length, 7);
+  assert.match(calls[3], /new_pools/);
+  assert.match(calls[4], /trending_pools/);
+  assert.match(calls[5], /query=PONS&network=robinhood/);
+  assert.equal(calls[6], calls[0]);
   const snapshot = await provider.discover();
-  assert.equal(snapshot.pools.length, 5);
+  assert.equal(snapshot.pools.length, 6);
   assert.equal(snapshot.pools.find((p) => p.id === calls[3]).fetchedAt, 195000);
 });
-it("eligible memecoins receive probe slots without exceeding six pools or two tiers per token", () => {
-  const ordinary = Array.from({ length: 8 }, (_, i) => ({
-    id: String(i),
-    other: String(Math.floor(i / 3)),
+it("research slots cover every eligible pool without ticker lists and preserve confirmation windows", () => {
+  const candidates = Array.from({ length: 13 }, (_, i) => ({
+    id: String(i).padStart(2, "0"),
+    other: String(i),
   }));
-  const meme = MEME_WATCHLIST.map((m) => ({ id: m.pool, other: m.token }));
-  const selected = selectProbePools([
-    ...ordinary,
-    meme[0],
-    { ...meme[0], id: "second-tier" },
-    meme[1],
-  ]);
-  assert.equal(selected.length, 6);
-  for (const p of meme) assert.ok(selected.includes(p));
-  assert.equal(selected.filter((p) => p.other === "0").length, 2);
-  assert.ok(
-    !selectProbePools(ordinary).some((p) => meme.includes(p)),
-    "selection cannot reintroduce an ineligible pool",
-  );
-  const leaders = Array.from({ length: 6 }, (_, i) => ({ id: `leader-${i}`, other: `token-${i}` }));
-  assert.ok(
-    !selectProbePools([...leaders, { id: "fake", other: "unknown", label: "MEME" }]).some(
-      (p) => p.id === "fake",
-    ),
-    "a matching ticker cannot claim a reserved slot",
-  );
+  const seen = new Set();
+  for (let i = 0; i < candidates.length; i++) {
+    const selected = selectProbePools(candidates, i * 300000);
+    assert.deepEqual(selected.slice(0, 4), candidates.slice(0, 4));
+    assert.equal(selected.length, 6);
+    assert.equal(new Set(selected.map((p) => p.id)).size, 6);
+    assert.deepEqual(selected, selectProbePools(candidates, i * 300000 + 120000));
+    selected.forEach((p) => seen.add(p.id));
+  }
+  assert.equal(seen.size, candidates.length);
+  const tiers = candidates.map((p, i) => ({ ...p, other: String(Math.floor(i / 3)) }));
+  for (let i = 0; i < 10; i++) {
+    const selected = selectProbePools(tiers, i * 300000);
+    for (const p of selected) assert.ok(selected.filter((q) => q.other === p.other).length <= 2);
+  }
+  assert.deepEqual(selectProbePools([], 0), []);
+  assert.deepEqual(selectProbePools(candidates.slice(0, 5), 0), candidates.slice(0, 5));
 });
 it("discovery rotates pages without bursting and keeps original timestamps", async () => {
   let now = 0;

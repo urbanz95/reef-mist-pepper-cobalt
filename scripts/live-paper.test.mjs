@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { newLiveBook, stepLiveBook, fullRangeValue } from "../src/lib/live-paper.ts";
-import { readOnlyProvider, normalizePools } from "./live-paper/market.mjs";
+import { readOnlyProvider, normalizePools, samplePool } from "./live-paper/market.mjs";
 import { CONTRACTS } from "../src/lib/chain.ts";
 const start = 2_000_000_000_000;
 function point(now, patch = {}) {
@@ -99,7 +99,7 @@ it("full-range approximation is denominated in ETH and includes impermanent-loss
   assert.throws(() => newLiveBook(NaN));
   assert.throws(() => newLiveBook(1));
 });
-it("provider parsing rejects malformed / non-WETH data and has no catalog fallback", () => {
+it("provider parsing records unsupported pools without approving execution or inventing catalogue data", () => {
   assert.deepEqual(normalizePools({}), []);
   const token = "0x" + "12".repeat(20),
     pool = "0x" + "34".repeat(20);
@@ -116,15 +116,30 @@ it("provider parsing rejects malformed / non-WETH data and has no catalog fallba
           volume_usd: { h24: "100000" },
           pool_created_at: "2025-01-01",
         },
-        relationships: { base_token: { data: { id: "a" } }, quote_token: { data: { id: "b" } } },
+        relationships: {
+          base_token: { data: { id: "a" } },
+          quote_token: { data: { id: "b" } },
+          dex: { data: { id: "uniswap-v3-robinhood" } },
+        },
       },
     ],
   };
   assert.equal(normalizePools(json)[0].other, token);
+  assert.equal(normalizePools(json)[0].executionBlock, null);
+  json.data[0].relationships.dex.data.id = "uniswap-v4-robinhood";
+  json.data[0].attributes.address = "0x" + "34".repeat(32);
+  assert.match(normalizePools(json)[0].executionBlock, /Unsupported DEX/);
+  json.data[0].attributes.address = pool;
+  json.data[0].relationships.dex.data.id = "uniswap-v3-robinhood";
+  json.included[0].attributes.address = "0x" + "56".repeat(20);
+  assert.match(normalizePools(json)[0].executionBlock, /requires canonical WETH/);
   json.data[0].attributes.reserve_in_usd = "not-a-number";
   assert.deepEqual(normalizePools(json), []);
 });
 
+it("unsupported discoveries cannot reach an execution probe even when called directly", async () => {
+  await assert.rejects(samplePool({ executionBlock: "Unsupported DEX" }), /Unsupported DEX/);
+});
 it("carry48 can enter a fee opportunity rejected by six-hour economics without removing safety gates", () => {
   let baseline = newLiveBook(0.1),
     carry = newLiveBook(0.1, "carry48");

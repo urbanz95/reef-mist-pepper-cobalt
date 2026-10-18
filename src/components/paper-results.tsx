@@ -353,14 +353,19 @@ export function PaperResults() {
               <ul className="mt-3 space-y-3">
                 {report.poolCoverage.map((p) => (
                   <li key={p.id} className="border-t border-white/10 pt-3 text-xs">
-                    <a
-                      className="text-accent underline"
-                      href={`https://robinhoodchain.blockscout.com/address/${p.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {p.label}
-                    </a>
+                    {/^0x[0-9a-f]{40}$/i.test(p.id) ? (
+                      <a
+                        className="text-accent underline"
+                        href={`https://robinhoodchain.blockscout.com/address/${p.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {p.label}
+                      </a>
+                    ) : (
+                      <span>{p.label}</span>
+                    )}
+                    {p.dex && <p className="mt-1 text-muted">{p.dex}</p>}
                     <p className="mt-1">
                       {p.probes} successful probes · {p.failures} failed · $
                       {p.tvlUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })} TVL
