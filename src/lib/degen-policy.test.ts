@@ -139,3 +139,17 @@ it("paper scenarios share real policy, account for costs, and never guarantee a 
     if (scenario === "expensive") assert.equal(r.state.current, null);
   }
 });
+
+it('an infeasible high-net pool cannot veto a different pool meeting the cost margin',()=>{
+ // At the default horizon: A edge .00020/cost .00011 has higher raw net,
+ // but fails 2x costs. B edge .00010/cost .00002 passes and must be considered.
+ const candidates=[
+  {...observation().candidates[0],id:'infeasible',apr:58.4,costEth:.00011},
+  {...observation().candidates[0],id:'feasible',apr:29.2,costEth:.00002},
+ ];
+ let state=initialPolicy(1),decision;
+ for(let i=0;i<=10;i++){
+  decision=decide(state,observation({now:now+i*15000,fetchedAt:now+i*15000,candidates}));state=decision.state;
+ }
+ assert.equal(decision!.action,'enter');assert.equal(decision!.target!.id,'feasible');
+});

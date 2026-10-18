@@ -1,10 +1,11 @@
 import { mkdir, appendFile, writeFile, rename, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { newLiveBook, stepLiveBook } from "../../src/lib/live-paper.ts";
-import { POLICY } from "../../src/lib/degen-policy.ts";
+import { candidateEconomics, POLICY } from "../../src/lib/degen-policy.ts";
 import { CONTRACTS } from "../../src/lib/chain.ts";
-import { discover, currentPool, chainSnapshot, samplePool } from "./market.mjs";
+import { discover, currentPool, chainSnapshot, samplePool, seedProvider } from "./market.mjs";
 
+import { METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { createPublisher } from "./publish.mjs";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
@@ -65,6 +66,7 @@ let run = {
     "LP value uses a full-range constant-product approximation in ETH, not an actual NFT position.",
     "Fees are modeled from capped, discounted 24h volume APR, not measured earnings. No fees accrue across monitoring gaps.",
     "Gas budget measures entry and exit execution separately, adds 51,000 gas per leg plus 50% margin, and excludes vault deployment and any additional network data fee. Round-trip trading loss is reserved on entry; each gas leg is charged once. Estimates are not transaction receipts.",
+    "Discovery uses a shared one-request-per-65-second budget with backoff and rotates three pages. Provider volume/ETH-USD references expire for entry after ten minutes; live price/reserves and round-trip probes come from the current chain block every observation. Expired metadata cannot approve entries; existing positions still receive live exit monitoring.",
     "The provider can lag despite a recent HTTP response. Missing/stale observations block entries; unknown valuations are null, never zero.",
     "A passing probe is state-specific and cannot guarantee future sellability. Results do not prove profitability or live safety.",
   ],
@@ -74,6 +76,8 @@ if (segment > 1) {
   paperReportSchema.parse(saved);
   run = resumeReport(saved, { runId: run.runId, capitals, strategy, segment });
   if (run.universe !== universe) throw new Error("Overnight universe changed");
+  seedProvider(run.latest?.feed?.pools ?? []);
+  seedProvider(run.heldPoolMetadata ?? []);
 }
 let stopped = false;
 process.on("SIGTERM", () => {
@@ -115,13 +119,18 @@ try {
         lastFeedAttempt = start;
         try {
           feed = await discover();
-          run.validFeeds++;
+          if (feed.requested !== false) run.validFeeds++;
         } catch (e) {
           errors.push(e.shortMessage ?? e.message);
         }
       }
       record.feed = feed
-        ? { fetchedAt: feed.fetchedAt, providerAgeSec: feed.providerAgeSec, pools: feed.pools }
+        ? {
+            fetchedAt: feed.fetchedAt,
+            providerAgeSec: feed.providerAgeSec,
+            requestStats: feed.requestStats,
+            pools: feed.pools,
+          }
         : null;
       const snapshot = await chainSnapshot();
       record.chain = { ...snapshot, gasPrice: String(snapshot.gasPrice) };
@@ -153,14 +162,17 @@ try {
               ? "Liquidity below minimum"
               : start - p.createdAt < POLICY.minPoolAgeMs
                 ? "Pool younger than seven days"
-                : "Eligible; outside this sample's probe budget";
+                : start - p.fetchedAt > METADATA_MAX_AGE_MS
+                  ? "Provider volume metadata expired for entries"
+                  : "Eligible; outside this sample's probe budget";
       }
       let selected = ranked
         .filter((p) => {
           if (
             (universe !== "discovered" && !tokens.includes(p.other)) ||
             p.tvlUsd < POLICY.minTvlUsd ||
-            start - p.createdAt < POLICY.minPoolAgeMs
+            start - p.createdAt < POLICY.minPoolAgeMs ||
+            start - p.fetchedAt > METADATA_MAX_AGE_MS
           )
             return false;
           const count = counts.get(p.other) ?? 0;
@@ -180,15 +192,11 @@ try {
             errors.push(`Held pool ${id}: ${e.shortMessage ?? e.message}`);
           }
       }
+      run.heldPoolMetadata = selected;
       for (let index = 0; index < run.books.length; index++) {
         const book = run.books[index],
           points = [];
         for (const pool of selected) {
-          if (Date.now() - pool.fetchedAt > POLICY.maxDataAgeMs) {
-            const coverage = run.poolCoverage.find((c) => c.id === pool.id);
-            if (coverage) coverage.lastReason = "Provider metadata stale; no probe or entry";
-            continue;
-          }
           try {
             const p = await samplePool(
               pool,
@@ -200,11 +208,11 @@ try {
             const coverage = run.poolCoverage.find((c) => c.id === pool.id);
             if (coverage) {
               coverage.probes++;
-              coverage.lastReason =
-                "Canonical factory and current round-trip probe passed; paper-only eligibility";
+              coverage.lastReason = p.metadataFresh
+                ? "Live chain reserves and round-trip verified; metadata fresh enough for entries"
+                : "Live exit monitoring only; provider metadata older than ten minutes";
             }
             points.push(p);
-            record.markets.push({ capital: book.initial, ...p });
             run.verifiedQuotes++;
           } catch (e) {
             const coverage = run.poolCoverage.find((c) => c.id === pool.id);
@@ -215,6 +223,20 @@ try {
             errors.push(`${book.initial} ETH ${pool.id}: ${e.shortMessage ?? e.message}`);
           }
         }
+        for (const p of points) {
+          const held = points.find((q) => q.id === book.state.current);
+          const economics = candidateEconomics(
+            { ...p, costEth: p.costEth + (held?.exitCostEth ?? 0) },
+            book.value ?? book.initial,
+            held?.apr ?? 0,
+            strategy === "carry48" ? 48 : undefined,
+          );
+          p.economics = economics;
+          const coverage = run.poolCoverage.find((c) => c.id === p.id);
+          if (coverage && p.metadataFresh)
+            coverage.lastReason = `${book.initial} ETH: expected incremental fees ${economics.expectedFeesEth.toFixed(8)} ETH; required ${economics.requiredFeesEth.toFixed(8)} ETH; ${economics.feasible ? "cost margin passed" : "cost margin failed"} (other gates still apply)`;
+        }
+        record.markets.push(...points.map((p) => ({ capital: book.initial, ...p })));
         const observedAt = Date.now();
         const result = stepLiveBook(book, points, observedAt);
         run.books[index] = result.book;

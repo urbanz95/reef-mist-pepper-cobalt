@@ -15,6 +15,7 @@ import {
   PAPER_PROBE_BYTECODE as PROBE_BYTECODE,
 } from "../../src/lib/degen-paper-probe-artifact.ts";
 import { POLICY } from "../../src/lib/degen-policy.ts";
+import { createPoolProvider, METADATA_MAX_AGE_MS } from "./provider.mjs";
 const RPC = "https://rpc.mainnet.chain.robinhood.com";
 const GECKO = "https://api.geckoterminal.com/api/v2/networks/robinhood";
 const allowedMethods = new Set([
@@ -43,6 +44,7 @@ const abi = parseAbi([
   "function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)",
   "function getPool(address,address,uint24) view returns (address)",
   "function decimals() view returns (uint8)",
+  "function balanceOf(address) view returns (uint256)",
 ]);
 const metadata = new Map();
 export function normalizePools(json) {
@@ -70,6 +72,11 @@ export function normalizePools(json) {
       const other =
         t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase() ? t1.address : t0.address;
       return {
+        wethUsd: Number(
+          t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase()
+            ? a.base_token_price_usd
+            : a.quote_token_price_usd,
+        ),
         other: other.toLowerCase(),
         id: a.address.toLowerCase(),
         label: a.name ?? a.address,
@@ -86,7 +93,16 @@ async function feed(path) {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`Pool provider HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`Pool provider HTTP ${res.status}`);
+    const retry = res.headers.get("retry-after");
+    error.retryAfterMs = retry
+      ? /^\d+$/.test(retry)
+        ? Number(retry) * 1000
+        : Math.max(0, Date.parse(retry) - Date.now())
+      : 0;
+    throw error;
+  }
   const age = Number(res.headers.get("age") ?? 0);
   if (!Number.isFinite(age) || age < 0) throw new Error("Invalid provider cache age");
   return {
@@ -95,21 +111,12 @@ async function feed(path) {
     providerAgeSec: age,
   };
 }
-export async function discover() {
-  const pages = [];
-  for (const page of [1, 2, 3])
-    pages.push(
-      await feed(`/dexes/uniswap-v3-robinhood/pools?page=${page}&include=base_token,quote_token`),
-    );
-  return {
-    pools: [...new Map(pages.flatMap((p) => p.pools).map((p) => [p.id, p])).values()],
-    fetchedAt: Math.min(...pages.map((p) => p.fetchedAt)),
-    providerAgeSec: Math.max(...pages.map((p) => p.providerAgeSec)),
-  };
-}
-export async function currentPool(id) {
+const provider = createPoolProvider(feed);
+export const seedProvider = (pools) => provider.seed(pools);
+export const discover = () => provider.discover();
+export function currentPool(id) {
   if (!/^0x[0-9a-f]{40}$/i.test(id)) throw new Error("Invalid pool address");
-  return feed(`/pools/${id}?include=base_token,quote_token`);
+  return provider.currentPool(id);
 }
 async function poolMeta(pool) {
   if (metadata.has(pool.id)) return metadata.get(pool.id);
@@ -145,21 +152,57 @@ export async function chainSnapshot() {
     throw new Error("Chain head is stale");
   return { block: String(block.number), at, gasPrice: await client.getGasPrice() };
 }
+let quoteBlock = "",
+  quoteCache = new Map();
 export async function samplePool(pool, capital, fetchedAt, snapshot, paperTokens) {
   const m = await poolMeta(pool);
   if (m.other.toLowerCase() !== pool.other) throw new Error("Provider token identity mismatch");
-  const slot = await client.readContract({
-    address: pool.id,
-    abi,
-    functionName: "slot0",
-    blockNumber: BigInt(snapshot.block),
-  });
+  if (quoteBlock !== snapshot.block) {
+    quoteBlock = snapshot.block;
+    quoteCache.clear();
+  }
+  if (!quoteCache.has(pool.id))
+    quoteCache.set(
+      pool.id,
+      Promise.all([
+        client.readContract({
+          address: pool.id,
+          abi,
+          functionName: "slot0",
+          blockNumber: BigInt(snapshot.block),
+        }),
+        client.readContract({
+          address: CONTRACTS.weth,
+          abi,
+          functionName: "balanceOf",
+          args: [pool.id],
+          blockNumber: BigInt(snapshot.block),
+        }),
+        client.readContract({
+          address: m.other,
+          abi,
+          functionName: "balanceOf",
+          args: [pool.id],
+          blockNumber: BigInt(snapshot.block),
+        }),
+      ]),
+    );
+  const [slot, wethBalance, otherBalance] = await quoteCache.get(pool.id);
   const ratio = (Number(slot[0]) / 2 ** 96) ** 2;
   const priceEth =
     m.token0.toLowerCase() === CONTRACTS.weth.toLowerCase()
       ? 10 ** (m.decimals - 18) / ratio
       : ratio * 10 ** (m.decimals - 18);
   if (!Number.isFinite(priceEth) || priceEth <= 0) throw new Error("Invalid on-chain price");
+  if (!Number.isFinite(pool.wethUsd) || pool.wethUsd <= 0)
+    throw new Error("ETH/USD metadata reference unavailable");
+  const reserveEth =
+    Number(formatEther(wethBalance)) + (Number(otherBalance) / 10 ** m.decimals) * priceEth;
+  const tvlUsd = reserveEth * pool.wethUsd;
+  if (!Number.isFinite(reserveEth) || reserveEth <= 0 || !Number.isFinite(tvlUsd) || tvlUsd <= 0)
+    throw new Error("Invalid on-chain pool reserves");
+  const metadataAge = Date.now() - fetchedAt;
+  const metadataFresh = metadataAge >= 0 && metadataAge <= METADATA_MAX_AGE_MS;
   const amount = parseEther(capital.toFixed(18));
   const spacing = { 100: 1, 500: 10, 3000: 60, 10000: 200 }[m.fee],
     upper = Math.floor(887272 / spacing) * spacing;
@@ -193,15 +236,19 @@ export async function samplePool(pool, capital, fetchedAt, snapshot, paperTokens
   return {
     id: pool.id,
     label: pool.label,
-    apr: ((((pool.volume24h * m.fee) / 1e6) * 365) / pool.tvlUsd) * 100,
-    tvlUsd: pool.tvlUsd,
+    apr: ((((pool.volume24h * m.fee) / 1e6) * 365) / tvlUsd) * 100,
+    tvlUsd,
+    reserveEth,
+    metadataAt: fetchedAt,
+    metadataAgeSec: metadataAge / 1000,
+    metadataFresh,
     createdAt: pool.createdAt,
     priceEth,
-    fetchedAt: Math.min(fetchedAt, snapshot.at),
+    fetchedAt: snapshot.at,
     factoryVerified: true,
     roundTripOk: true,
     // Experimental paper universe only. Never imported by the real keeper.
-    reviewed: paperTokens.includes(m.other.toLowerCase()),
+    reviewed: metadataFresh && paperTokens.includes(m.other.toLowerCase()),
     costEth: loss + gasEth,
     entryCostEth: loss + entryBudget,
     exitCostEth: exitBudget,
