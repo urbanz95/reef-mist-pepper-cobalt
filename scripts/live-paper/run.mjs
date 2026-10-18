@@ -6,7 +6,7 @@ import { CONTRACTS } from "../../src/lib/chain.ts";
 import { discover, currentPool, chainSnapshot, samplePool, seedProvider } from "./market.mjs";
 
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
-import { MEME_WATCHLIST, selectProbePools } from "./universe.mjs";
+import { selectProbePools } from "./universe.mjs";
 import { createPublisher } from "./publish.mjs";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
@@ -67,8 +67,7 @@ let run = {
     "LP value uses a full-range constant-product approximation in ETH, not an actual NFT position.",
     "Fees are modeled from capped, discounted 24h volume APR, not measured earnings. No fees accrue across monitoring gaps.",
     "Gas budget measures entry and exit execution separately, adds 51,000 gas per leg plus 50% margin, and excludes vault deployment and any additional network data fee. Round-trip trading loss is reserved on entry; each gas leg is charged once. Estimates are not transaction receipts.",
-    "Discovery shares one request per 65 seconds with backoff across three pages and direct MEME/CASHCAT pool lookups. Up to two of six probe slots are reserved for eligible watchlist pools. All liquidity, age, cost and execution gates remain mandatory; this watchlist is not comprehensive or a security approval. Provider metadata expires for entry after ten minutes; existing positions retain live exit monitoring.",
-    `Memecoin research addresses: ${MEME_WATCHLIST.map((m) => `${m.label}: token ${m.token}, pool ${m.pool}`).join("; ")}`,
+    "Discovery shares one request per 65 seconds with backoff across three V3 pages, network new/trending pools and a PONS search. This is a bounded, provider-indexed sample, not all launches or proof of migration. Unsupported DEX/quote tokens are observed but never executed. Four leaders and two rotating research slots cover eligible candidates without a fixed token list. Provider metadata expires for entry after ten minutes; held pools retain live exit monitoring. All age/liquidity/security/cost gates remain mandatory.",
     "The provider can lag despite a recent HTTP response. Missing/stale observations block entries; unknown valuations are null, never zero.",
     "A passing probe is state-specific and cannot guarantee future sellability. Results do not prove profitability or live safety.",
   ],
@@ -146,6 +145,10 @@ try {
             id: p.id,
             label: p.label,
             token: p.other,
+            dex: p.dex,
+            createdAt: p.createdAt,
+            firstSeenAt: record.at,
+            lastSeenAt: record.at,
             tvlUsd: p.tvlUsd,
             observations: 0,
             probes: 0,
@@ -155,9 +158,11 @@ try {
           run.poolCoverage.push(coverage);
         }
         coverage.observations++;
+        coverage.lastSeenAt = record.at;
         coverage.tvlUsd = p.tvlUsd;
-        coverage.lastReason =
-          universe !== "discovered" && !tokens.includes(p.other)
+        coverage.lastReason = p.executionBlock
+          ? p.executionBlock
+          : universe !== "discovered" && !tokens.includes(p.other)
             ? "Outside selected paper tokens"
             : p.tvlUsd < POLICY.minTvlUsd
               ? "Liquidity below minimum"
@@ -170,6 +175,7 @@ try {
       let selected = selectProbePools(
         ranked.filter((p) => {
           if (
+            p.executionBlock ||
             (universe !== "discovered" && !tokens.includes(p.other)) ||
             p.tvlUsd < POLICY.minTvlUsd ||
             start - p.createdAt < POLICY.minPoolAgeMs ||
@@ -178,6 +184,7 @@ try {
             return false;
           return true;
         }),
+        start,
       ).map((p) => ({ ...p, fetchedAt: p.fetchedAt ?? feed.fetchedAt }));
       // A held pool disappearing from the discovery top page is queried directly.
       for (const id of new Set(run.books.map((b) => b.state.current).filter(Boolean))) {

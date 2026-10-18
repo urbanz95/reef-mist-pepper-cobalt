@@ -1,39 +1,47 @@
-# Memecoin research in the paper test
+# Dynamic memecoin research in the paper test
 
-The discovered universe now directly refreshes two Robinhood Chain research pools,
-in addition to the existing three Uniswap V3 discovery pages:
+The discovered universe no longer relies on a fixed MEME/CASHCAT research list.
+The shared provider budget rotates six sources:
 
-| Token              | Token address                              | Pool address                               |
-| ------------------ | ------------------------------------------ | ------------------------------------------ |
-| MEME (A Meme Coin) | 0x385f4f8ae47651ce5f58f5265395a669f8281e18 | 0xe2c12a7379706a291cadaaec1d22458be2f7239d |
-| CASHCAT (Cash Cat) | 0x020bfc650a365f8bb26819deaabf3e21291018b4 | 0xa70fc67c9f69da90b63a0e4c05d229954574e313 |
+1. Three pages of Uniswap V3 Robinhood pools (includes AI and other tokens).
+2. Robinhood network new pools.
+3. Robinhood network trending pools.
+4. Network-scoped PONS search, which can contain several tokens with the same name.
 
-Identities came from the provider's token-address relationships, not symbol matching.
-This is an explicit initial research watchlist, not an exhaustive meme catalogue or
-a token security approval. New watchlist entries require explicit chain addresses.
+Pool and token addresses identify candidates. A ticker is not an identity or security
+approval. All six requests share the existing 65-second minimum HTTP interval,
+retry-after handling and exponential backoff. At normal 30-second polling, each
+source refreshes in about nine minutes. Original timestamps never advance on cache
+hits; ten-minute metadata expiry still blocks entries during delays/backoff.
+This is bounded provider-indexed discovery, not every launch on the chain.
+New-pool discovery does not establish a migration or cross-pool token identity.
 
-All five requests share the existing 65-second minimum HTTP interval, retry-after
-handling and exponential backoff. At the runner's 30-second discovery polling rate,
-a normal complete cycle takes about 7.5 minutes. Original metadata timestamps stay
-unchanged on cache hits; backoff may cause expiry and block entries.
+All observed valid pool records, including V4 pool IDs and pairs on other DEXs or
+with unsupported quote tokens, appear in coverage. Unsupported entries carry an
+explicit reason and are excluded before execution probes; a second guard also
+rejects them in samplePool. Canonical factory and token identity checks still apply
+on chain to every supported candidate. The current executor only supports canonical
+Uniswap V3 pools with actual WETH; native-ETH aliases and ticker names do not qualify.
+V4 IDs are shown as pool names without invalid contract-address explorer links.
 
-All discovered WETH pools still appear in pool coverage with screening reasons.
-Up to two of six execution-probe slots prioritize eligible watchlist pools, then the
-remaining slots follow the existing volume/TVL ranking. Maximum two tiers per token
-still applies. Held pools are additionally monitored regardless of entry eligibility.
-The token-control universe still only probes its explicitly selected tokens.
+Among eligible candidates, four leaders remain continuously monitored and two
+research slots rotate across the remaining pools in stable five-minute windows.
+This avoids starving tokens outside a fixed top six while permitting two-minute
+entry confirmation. The total remains six probes per sample, max two tiers per
+token, plus held-pool exit monitoring. The token-control universe still screens
+only its selected tokens for execution.
 
 The $100k liquidity, seven-day age, canonical factory, round-trip execution,
-confirmation, freshness and cost-margin rules are unchanged. MEME had about $70k
-liquidity when inspected on 2026-10-18 and was therefore ineligible at that time.
-Rejected pools remain visible; there is no forced memecoin purchase.
+confirmation, freshness and cost-margin rules are unchanged. Newly launched or
+migrated pools can be observed immediately once indexed but cannot enter while
+they fail those gates. This change does not add a V4/other-DEX execution adapter,
+a launchpad migration detector, or early-pool trading strategy.
 
-Existing workflow processes keep their checked-out code. Dispatch a new run on the
-merged revision to use this coverage; the concurrency group queues it until the
-current run finishes. The new run has fresh virtual 0.1 and 0.5 ETH books; it does
-not reset or rewrite the previous run. Production trading and contracts are unchanged.
+Coverage includes DEX, provider creation time and first/last observation times in
+report.json/pools.csv; raw samples preserve the observed feeds and market economics.
+The dashboard shows the DEX and latest screening/execution result. These fields
+are provider observations, not verified token classifications or migration events.
 
-Use the public Degen paper-results coverage and workflow artifacts (`report.html`,
-`pools.csv`, `trades.csv`, `samples.ndjson`) to distinguish screening from verified
-probes and simulated entries/exits. Fee APR and LP PnL remain modeled, not earnings
-or probabilities of profit. No wallet key or transaction broadcast is used.
+Start the new revision in a separate overnight workflow run; existing running
+processes retain their checked-out code. Fresh virtual 0.1/0.5 ETH books do not
+rewrite previous results. No wallet key or transaction broadcast is used.

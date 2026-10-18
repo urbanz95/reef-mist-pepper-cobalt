@@ -57,13 +57,21 @@ export function normalizePools(json) {
       const a = p.attributes ?? {};
       const t0 = tokens.get(p.relationships?.base_token?.data?.id),
         t1 = tokens.get(p.relationships?.quote_token?.data?.id);
-      if (
-        !t0 ||
-        !t1 ||
-        ![t0.address, t1.address].some((t) => t?.toLowerCase() === CONTRACTS.weth.toLowerCase())
-      )
+      if (!t0 || !t1 || ![t0.address, t1.address].every((t) => /^0x[0-9a-f]{40}$/i.test(t ?? "")))
         return null;
-      if (!/^0x[0-9a-f]{40}$/i.test(a.address ?? "")) return null;
+      if (!/^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(a.address ?? "")) return null;
+      const dex = p.relationships?.dex?.data?.id;
+      const isWeth = [t0.address, t1.address].some(
+        (t) => t.toLowerCase() === CONTRACTS.weth.toLowerCase(),
+      );
+      const executionBlock =
+        dex !== "uniswap-v3-robinhood"
+          ? `Unsupported DEX: ${dex ?? "unknown"}; observation only`
+          : !isWeth
+            ? "Unsupported quote token; executor requires canonical WETH"
+            : !/^0x[0-9a-f]{40}$/i.test(a.address)
+              ? "Unsupported pool identifier"
+              : null;
       const tvlUsd = Number(a.reserve_in_usd),
         volume24h = Number(a.volume_usd?.h24),
         createdAt = Date.parse(a.pool_created_at ?? "");
@@ -72,11 +80,15 @@ export function normalizePools(json) {
       const other =
         t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase() ? t1.address : t0.address;
       return {
-        wethUsd: Number(
-          t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase()
-            ? a.base_token_price_usd
-            : a.quote_token_price_usd,
-        ),
+        dex: dex ?? "unknown",
+        executionBlock,
+        wethUsd: isWeth
+          ? Number(
+              t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase()
+                ? a.base_token_price_usd
+                : a.quote_token_price_usd,
+            )
+          : null,
         other: other.toLowerCase(),
         id: a.address.toLowerCase(),
         label: a.name ?? a.address,
@@ -89,10 +101,13 @@ export function normalizePools(json) {
 }
 async function feed(path) {
   const started = Date.now();
-  const res = await fetch(`${GECKO}${path}`, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(10000),
-  });
+  const res = await fetch(
+    `${path.startsWith("/search/") ? "https://api.geckoterminal.com/api/v2" : GECKO}${path}`,
+    {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    },
+  );
   if (!res.ok) {
     const error = new Error(`Pool provider HTTP ${res.status}`);
     const retry = res.headers.get("retry-after");
@@ -155,6 +170,7 @@ export async function chainSnapshot() {
 let quoteBlock = "",
   quoteCache = new Map();
 export async function samplePool(pool, capital, fetchedAt, snapshot, paperTokens) {
+  if (pool.executionBlock) throw new Error(pool.executionBlock);
   const m = await poolMeta(pool);
   if (m.other.toLowerCase() !== pool.other) throw new Error("Provider token identity mismatch");
   if (quoteBlock !== snapshot.block) {
