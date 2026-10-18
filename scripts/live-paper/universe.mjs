@@ -25,8 +25,8 @@ export function selectProbePools(eligible) {
     counts.set(p.other, count + 1);
     return count < 2;
   });
-  const watched = diverse
-    .filter((p) => MEME_WATCHLIST.some((m) => m.token === p.other))
-    .slice(0, 2);
+  const watched = MEME_WATCHLIST.map((m) => diverse.find((p) => p.other === m.token)).filter(
+    Boolean,
+  );
   return [...watched, ...diverse.filter((p) => !watched.includes(p))].slice(0, 6);
 }

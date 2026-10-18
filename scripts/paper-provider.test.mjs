@@ -31,7 +31,12 @@ it("eligible memecoins receive probe slots without exceeding six pools or two ti
     other: String(Math.floor(i / 3)),
   }));
   const meme = MEME_WATCHLIST.map((m) => ({ id: m.pool, other: m.token }));
-  const selected = selectProbePools([...ordinary, ...meme]);
+  const selected = selectProbePools([
+    ...ordinary,
+    meme[0],
+    { ...meme[0], id: "second-tier" },
+    meme[1],
+  ]);
   assert.equal(selected.length, 6);
   for (const p of meme) assert.ok(selected.includes(p));
   assert.equal(selected.filter((p) => p.other === "0").length, 2);
