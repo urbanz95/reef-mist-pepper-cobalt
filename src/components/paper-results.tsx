@@ -168,6 +168,8 @@ export function PaperResults() {
             {report.finishedAt ? ` · Finished ${time(report.finishedAt)}` : ""}. Refreshes every
             minute; publication can be delayed. Overnight segments preserve the same balances and
             positions.
+            {report.executionProfile === "pons-v2" &&
+              " Pons curve and graduated-pool execution enabled."}
           </p>
           <div className="my-5 flex flex-wrap gap-2" aria-label="Virtual balances">
             {report.books.map((b, i) => (
@@ -211,9 +213,10 @@ export function PaperResults() {
                 position, 4% combined at entry.
               </p>
               <p className="mt-2 text-xs text-muted">
-                Liquidity and token security proof required. Unknown checks block entries. V3/V4
-                withdrawal permissions and unsupported lockers are currently unverified and remain
-                observation-only.
+                Liquidity and token security proof required. Unknown checks block entries. Pons V4
+                seed positions use a verified permanent-lock adapter. Generic V3/V4 withdrawal
+                permissions, earlier unreviewed lockers and pre-graduation curves remain
+                observation-only for entries.
               </p>
               {report.monitor && (
                 <p className="mt-2 text-xs">
@@ -431,6 +434,50 @@ export function PaperResults() {
                           : ""}
                       </p>
                     )}
+                    {p.protectedLiquidityFraction !== undefined &&
+                      p.liquidityKind === "pons-permanent-seed" && (
+                        <p className="mt-1">
+                          Permanent Pons seed: {(p.protectedLiquidityFraction * 100).toFixed(2)}% of
+                          active liquidity
+                        </p>
+                      )}
+                    {p.stage && <p className="mt-1">Pons stage: {p.stage}</p>}
+                    {p.lastSimulation && (
+                      <div className="mt-2 rounded bg-surface p-3">
+                        <p>
+                          Read-only execution:{" "}
+                          {p.lastSimulation.status === "passed"
+                            ? "buy/sell measured"
+                            : "unavailable"}{" "}
+                          · {time(p.lastSimulation.at)}
+                        </p>
+                        <p className="mt-1">
+                          Input: {eth(p.lastSimulation.inputEth)}
+                          {p.lastSimulation.receivedEth !== undefined
+                            ? ` · Sale-only proceeds: ${eth(p.lastSimulation.receivedEth)}`
+                            : ""}
+                          {p.lastSimulation.gasEth !== undefined
+                            ? ` · Estimated two-leg gas: ${eth(p.lastSimulation.gasEth)}`
+                            : ""}
+                        </p>
+                        {p.lastSimulation.reason && (
+                          <p className="mt-1 break-words">{p.lastSimulation.reason}</p>
+                        )}
+                        {p.lastSimulation.recovery !== undefined && (
+                          <p className="mt-1">
+                            Immediate round-trip recovery before gas:{" "}
+                            {(100 * p.lastSimulation.recovery).toFixed(2)}%.
+                            {p.lastSimulation.costGatePassed === false
+                              ? " Exceeds the 3% entry-loss limit."
+                              : ""}
+                          </p>
+                        )}
+                        <p className="mt-1 text-muted">
+                          Diagnostic simulation only. Entry still requires all security, liquidity
+                          and signal checks.
+                        </p>
+                      </div>
+                    )}
                     {p.securityReasons?.length ? (
                       <ul className="mt-1 list-inside list-disc text-muted">
                         {p.securityReasons.map((reason) => (
@@ -440,7 +487,10 @@ export function PaperResults() {
                     ) : null}
                     {p.migrationStatus && (
                       <p className="mt-1 text-muted">
-                        Migration unconfirmed · {p.creationEvidence?.replaceAll("_", " ")}
+                        {p.migrationStatus === "confirmed"
+                          ? "Pons graduation verified from factory and matching pool key"
+                          : "Migration unconfirmed"}{" "}
+                        · {p.creationEvidence?.replaceAll("_", " ")}
                       </p>
                     )}
                     {p.creationTransaction && (

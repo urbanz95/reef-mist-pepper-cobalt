@@ -2,6 +2,7 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { paperReportSchema, paperReportStale, newerPaperReport } from "../src/lib/paper-report.ts";
 import { createPublisher } from "./live-paper/publish.mjs";
+import { reportFiles } from "./live-paper/report.mjs";
 const report = {
   version: 1,
   runId: "123",
@@ -21,6 +22,56 @@ const report = {
   decisions: [],
   equity: [],
 };
+it("Pons diagnostics survive public serialization and exports without turning rejection into a trade", () => {
+  const parsed = paperReportSchema.parse({
+    ...report,
+    executionProfile: "pons-v2",
+    diagnosticProbes: 1,
+    trades: [],
+    poolCoverage: [
+      {
+        id: "0xpool",
+        label: "TOKEN / ETH",
+        token: "0xtoken",
+        dex: "pons-v2-dex",
+        stage: "graduated",
+        tvlUsd: 100000,
+        observations: 1,
+        probes: 1,
+        failures: 0,
+        lastReason: "Token safety unknown",
+        securityStatus: "unknown",
+        liquidityKind: "pons-permanent-seed",
+        protectedLiquidityFraction: 1,
+        lastSimulation: {
+          status: "passed",
+          at: report.updatedAt,
+          block: "100",
+          inputEth: 0.0019,
+          quantityRaw: "12345678901234567890",
+          receivedEth: 0.0018,
+          gasEth: 0.00001,
+          recovery: 0.95,
+          costGatePassed: false,
+        },
+      },
+    ],
+  });
+  assert.equal(parsed.poolCoverage[0].securityStatus, "unknown");
+  assert.equal(parsed.poolCoverage[0].lastSimulation.costGatePassed, false);
+  assert.equal(parsed.trades.length, 0);
+  const files = reportFiles({
+    ...parsed,
+    assumptions: [],
+    books: [{ ...parsed.books[0], realizedPnlEth: 0, openPnlEth: 0, totalPnlEth: null }],
+  });
+  for (const name of ["report.md", "report.html", "pools.csv"]) {
+    assert.ok(files[name].includes("12345678901234567890"));
+    assert.ok(files[name].includes("0.00190000") || files[name].includes("0.0019"));
+  }
+  assert.match(files["report.html"], /95.00%/);
+  assert.match(files["pools.csv"], /simulationCostGatePassed/);
+});
 it("report preserves unknown PnL, strips private/unrelated fields and detects stalled running updates", () => {
   const parsed = paperReportSchema.parse({ ...report, secret: "never publish" });
   assert.equal(parsed.books[0].value, null);

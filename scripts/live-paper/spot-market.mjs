@@ -35,20 +35,12 @@ const abi = parseAbi([
   "function poolKeys(bytes25) view returns(address,address,uint24,int24,address)",
 ]);
 const keys = new Map();
-const keyType = {
-  type: "tuple",
-  components: [
-    { name: "currency0", type: "address" },
-    { name: "currency1", type: "address" },
-    { name: "fee", type: "uint24" },
-    { name: "tickSpacing", type: "int24" },
-    { name: "hooks", type: "address" },
-  ],
-};
-export function poolKeyHash(key) {
-  return keccak256(encodeAbiParameters([keyType], [key]));
-}
+import { poolKeyHash } from "./pool-key.mjs";
+export { poolKeyHash } from "./pool-key.mjs";
+import { isPons, paperVersion } from "../../src/lib/paper-venues.ts";
+import { resolvePonsMeta } from "./pons-market.mjs";
 export async function resolveSpotMeta(client, pool, snapshot) {
+  if (isPons(pool.dex)) return resolvePonsMeta(client, pool, snapshot);
   const read = (address, functionName, args = []) =>
     client.readContract({
       address: address.toLowerCase(),
@@ -104,11 +96,7 @@ export async function resolveSpotMeta(client, pool, snapshot) {
     m = { version, key, other, decimals, funding0: isFunding(key.currency0), evidence };
     keys.set(pool.id, m);
   }
-  if (
-    m.other.toLowerCase() !== pool.other.toLowerCase() ||
-    m.version !==
-      { "uniswap-v2-robinhood": 2, "uniswap-v3-robinhood": 3, "uniswap-v4-robinhood": 4 }[pool.dex]
-  )
+  if (m.other.toLowerCase() !== pool.other.toLowerCase() || m.version !== paperVersion(pool.dex))
     throw new Error("Cached pool token/protocol identity mismatch");
   return m;
 }
@@ -123,7 +111,24 @@ export async function spotDepth(client, pool, snapshot) {
       blockNumber: BigInt(snapshot.block),
     });
   let priceEth, reserveEth;
-  if (m.version === 2) {
+  if (m.version === 5) {
+    const [reserves, real] = await Promise.all([
+      client.readContract({
+        address: m.curve,
+        abi: parseAbi(["function getReserves() view returns(uint256,uint256)"]),
+        functionName: "getReserves",
+        blockNumber: BigInt(snapshot.block),
+      }),
+      client.readContract({
+        address: m.curve,
+        abi: parseAbi(["function realQuoteReserve() view returns(uint256)"]),
+        functionName: "realQuoteReserve",
+        blockNumber: BigInt(snapshot.block),
+      }),
+    ]);
+    priceEth = Number(reserves[0]) / 1e18 / (Number(reserves[1]) / 10 ** m.decimals);
+    reserveEth = (2 * Number(real)) / 1e18;
+  } else if (m.version === 2) {
     const [r0, r1] = await read(pool.id, "getReserves");
     const funding = Number(m.funding0 ? r0 : r1) / 1e18,
       other = Number(m.funding0 ? r1 : r0) / 10 ** m.decimals;
@@ -132,12 +137,14 @@ export async function spotDepth(client, pool, snapshot) {
   } else {
     const slot =
       m.version === 4
-        ? await read(CONTRACTS.v4StateView, "getSlot0", [pool.id])
+        ? await read(CONTRACTS.v4StateView, "getSlot0", [m.executionId ?? pool.id])
         : await read(pool.id, "slot0");
     const ratio = (Number(slot[0]) / 2 ** 96) ** 2;
     priceEth = (m.funding0 ? 1 / ratio : ratio) * 10 ** (m.decimals - 18);
     if (m.version === 4) {
-      const liquidity = await read(CONTRACTS.v4StateView, "getLiquidity", [pool.id]);
+      const liquidity = await read(CONTRACTS.v4StateView, "getLiquidity", [
+        m.executionId ?? pool.id,
+      ]);
       // Active virtual depth, not the shared manager balance or actual per-pool TVL.
       const fundingRaw = m.funding0
         ? Number(liquidity) / (Number(slot[0]) / 2 ** 96)
@@ -160,11 +167,12 @@ export async function spotDepth(client, pool, snapshot) {
   return { m, priceEth, reserveEth };
 }
 const executorFor = (m) =>
-  m.version === 2
+  m.executor ??
+  (m.version === 2
     ? CONTRACTS.v2Router
     : m.version === 3
       ? CONTRACTS.swapRouter02
-      : CONTRACTS.v4PoolManager;
+      : CONTRACTS.v4PoolManager);
 export const PROBE_ACCOUNT = "0x000000000000000000000000000000000000bEEF";
 export const EXIT_WRAPPER = getContractAddress({ from: PROBE_ACCOUNT, nonce: 0n });
 export const EXIT_WALLET = getContractAddress({ from: EXIT_WRAPPER, nonce: 1n });
@@ -267,14 +275,16 @@ export async function quoteHeldExit(client, pool, quantityRaw, snapshot) {
     block: snapshot.block,
   };
 }
-export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot) {
+export async function sampleSpotPool(
+  client,
+  pool,
+  capital,
+  fetchedAt,
+  snapshot,
+  { diagnosticOnly = false } = {},
+) {
   const { m, priceEth, reserveEth } = await spotDepth(client, pool, snapshot);
-  const executor =
-    m.version === 2
-      ? CONTRACTS.v2Router
-      : m.version === 3
-        ? CONTRACTS.swapRouter02
-        : CONTRACTS.v4PoolManager;
+  const executor = executorFor(m);
   const amount = parseEther(capital.toFixed(18));
   const data = encodeDeployData({
     abi: SPOT_PROBE_ABI,
@@ -295,7 +305,8 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     Array.from({ length: 4 }, () => ({ type: "uint256" })),
     result.data,
   );
-  if (bought === 0n || recovered < (amount * 97n) / 100n)
+  const roundTripOk = bought > 0n && recovered >= (amount * 97n) / 100n;
+  if (bought === 0n || recovered === 0n || (!diagnosticOnly && !roundTripOk))
     throw new Error("Spot round trip lost over 3% or returned no tokens");
   const entryGas = Number(formatEther(((enterGas + 51000n) * snapshot.gasPrice * 15n) / 10n));
   const exitCostEth = Number(formatEther(((exitGas + 51000n) * snapshot.gasPrice * 15n) / 10n));
@@ -306,7 +317,10 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     id: pool.id,
     label: pool.label,
     token: m.other,
-    protocol: `v${m.version}`,
+    protocol: m.stage ? `pons-${m.stage}` : `v${m.version}`,
+    stage: m.stage,
+    executionPool: m.executionId ?? pool.id,
+    factory: m.stack?.factory,
     apr: 0,
     tvlUsd: m.version === 4 ? pool.tvlUsd : reserveEth * pool.wethUsd,
     reserveEth,
@@ -316,7 +330,7 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     metadataAt: fetchedAt,
     metadataFresh,
     factoryVerified: true,
-    roundTripOk: true,
+    roundTripOk,
     reviewed: metadataFresh,
     costEth: loss + entryGas + exitCostEth,
     entryCostEth: loss + entryGas,
@@ -330,10 +344,15 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     probeEnterGas: String(enterGas),
     probeExitGas: String(exitGas),
     block: snapshot.block,
-    migrationStatus: "unconfirmed",
+    migrationStatus: m.stage === "graduated" ? "confirmed" : "unconfirmed",
     poolIdentityVerified: true,
     creationEvidence: m.evidence,
-    depthBasis: m.version === 4 ? "active virtual liquidity" : "funding reserves",
+    depthBasis:
+      m.version === 5
+        ? "real curve quote reserves; phantom excluded"
+        : m.version === 4
+          ? "active virtual liquidity"
+          : "funding reserves",
     manualReviewVerified: false,
   };
 }

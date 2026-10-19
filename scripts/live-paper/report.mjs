@@ -23,7 +23,14 @@ export function completeReport(run) {
   };
 }
 export function reportMarkdown(r) {
-  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Decision counts\n\n${Object.entries(
+  const diagnostics = (r.poolCoverage ?? []).filter((p) => p.lastSimulation);
+  const diagnosticRows = diagnostics
+    .map((p) => {
+      const q = p.lastSimulation;
+      return `| ${safe(p.label)} | ${p.id} | ${p.stage ?? "unknown"} | ${q.status === "passed" ? "buy/sell measured" : "unavailable"} | ${q.at} | ${q.block ?? "unknown"} | ${eth(q.inputEth)} | ${q.quantityRaw ?? "unknown"} | ${q.receivedEth === undefined ? "unknown" : eth(q.receivedEth)} | ${q.gasEth === undefined ? "unknown" : eth(q.gasEth)} | ${q.recovery === undefined ? "unknown" : (100 * q.recovery).toFixed(2) + "%"} | ${q.costGatePassed === undefined ? "unknown" : q.costGatePassed ? "passed" : "rejected"} | ${safe(q.reason ?? "")} |`;
+    })
+    .join("\n");
+  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Read-only execution diagnostics\n\nThese calls use no money and do not book positions. A successful buy/sell can still fail cost or security admission.\n\n| Pool | Address | Stage | Execution | UTC | Block | Input ETH | Raw token quantity | Sale-only ETH | Two-leg gas ETH | Immediate recovery before gas | 3% entry-loss gate | Reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n${diagnosticRows || "| No diagnostics yet |"}\n\n## Decision counts\n\n${Object.entries(
     r.reasons,
   )
     .map(([k, v]) => `- ${v} × ${k}`)
@@ -83,7 +90,28 @@ export function reportFiles(r) {
     "report.md": md,
     "report.html": `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Overnight paper report</title><style>body{margin:2em;background:#101613;color:#edf4ee;font:14px system-ui}p{overflow-wrap:anywhere;line-height:1.6}table{border-collapse:collapse}td{padding:10px;border:1px solid #35443a;white-space:nowrap}tr:first-child{font-weight:bold;background:#1d2b22}.scroll{overflow-x:auto}</style><h1>Complete paper test report</h1>${html}</html>`,
     "trades.csv": csv(r.trades),
-    "pools.csv": csv(r.poolCoverage),
+    "pools.csv": csv(
+      r.poolCoverage.map((p) => {
+        const { lastSimulation, ...row } = p;
+        return {
+          ...row,
+          ...(lastSimulation
+            ? {
+                simulationStatus: lastSimulation.status,
+                simulationAt: lastSimulation.at,
+                simulationBlock: lastSimulation.block,
+                simulationInputEth: lastSimulation.inputEth,
+                simulationSaleEth: lastSimulation.receivedEth,
+                simulationGasEth: lastSimulation.gasEth,
+                simulationQuantityRaw: lastSimulation.quantityRaw,
+                simulationRecovery: lastSimulation.recovery,
+                simulationCostGatePassed: lastSimulation.costGatePassed,
+                simulationReason: lastSimulation.reason,
+              }
+            : {}),
+        };
+      }),
+    ),
     "equity.csv": csv(
       r.equity.flatMap((row) =>
         row.values.map((value, i) => ({

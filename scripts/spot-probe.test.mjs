@@ -49,6 +49,20 @@ contract V2Router {
   (bool ok,)=to.call{value:out}("");require(ok);r=new uint256[](2);r[0]=n;r[1]=out;
  }
 }
+contract Curve {
+ Token public token; uint8 public mode; bool public ready;
+ constructor(Token t)payable{token=t;}
+ function setMode(uint8 m)external{mode=m;ready=false;}
+ function buy(uint256 n,uint256,address to)external payable returns(uint256 out){
+  require(msg.value==n && mode!=3,"closed");
+  if(mode==1){n/=2;(bool ok,)=to.call{value:msg.value-n}("");require(ok);}
+  out=n*99/100*1000;token.mint(to,out);if(mode==2)ready=true;
+ }
+ function sell(uint256 n,uint256,address to)external returns(uint256 out){
+  require(mode!=3 && !ready,"curve closed");token.transferFrom(msg.sender,address(this),n);
+  out=n/1000*99/100;(bool ok,)=to.call{value:out}("");require(ok);
+ }
+}
 `;
 const out = JSON.parse(
   solc.compile(
@@ -204,4 +218,80 @@ it("held balance overrides require exact balance proof and refuse unknown accoun
     heldBalanceOverride(fake, "0x" + "12".repeat(20), "1", "1"),
     /cannot be proved/,
   );
+});
+
+it("Pons curve eth_call measures fees and sells the exact held amount; partial fills and graduation closure cannot become fake entries", async () => {
+  const token = await deploy("Mocks.sol", "Token"),
+    weth = await deploy("Mocks.sol", "Token"),
+    curve = await deploy("Mocks.sol", "Curve", [token], parseEther("1"));
+  const args = [
+    weth,
+    token,
+    curve,
+    5,
+    { currency0: zeroAddress, currency1: token, fee: 0, tickSpacing: 0, hooks: zeroAddress },
+  ];
+  const base = {
+    account: PROBE_ACCOUNT,
+    gas: 12000000n,
+    stateOverride: [{ address: PROBE_ACCOUNT, nonce: 0, balance: parseEther("100") }],
+  };
+  const buy = () =>
+    client.call({
+      ...base,
+      data: encodeDeployData({ ...art("Probe.sol", "PerchSpotPaperProbe"), args }),
+      value: parseEther(".0019"),
+    });
+  const result = await buy(),
+    [recovered, bought] = decodeAbiParameters(
+      Array.from({ length: 4 }, () => ({ type: "uint256" })),
+      result.data,
+    );
+  assert.equal(recovered, (parseEther(".0019") * 9801n) / 10000n);
+  assert.ok(bought > 0n);
+  const override = await heldBalanceOverride(
+    client,
+    token,
+    String(bought),
+    String(await client.getBlockNumber({ cacheTime: 0 })),
+  );
+  const localWrapper = getContractAddress({ from: PROBE_ACCOUNT, nonce: 1n }),
+    localWallet = getContractAddress({ from: localWrapper, nonce: 1n });
+  override.stateDiff.push({
+    slot: keccak256(
+      encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [localWallet, 0n]),
+    ),
+    value: toHex(bought, { size: 32 }),
+  });
+  const exit = () =>
+    client.call({
+      ...base,
+      data: encodeDeployData({
+        ...art("Probe.sol", "PerchSpotExitProbe"),
+        args: [...args, bought],
+      }),
+      stateOverride: [...base.stateOverride, override],
+    });
+  const sale = await exit(),
+    [received] = decodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], sale.data);
+  assert.equal(received, recovered);
+  for (const mode of [1, 2]) {
+    const hash = await wallet.writeContract({
+      address: curve,
+      abi: art("Mocks.sol", "Curve").abi,
+      functionName: "setMode",
+      args: [mode],
+    });
+    await client.waitForTransactionReceipt({ hash });
+    await assert.rejects(buy());
+  }
+  const hash = await wallet.writeContract({
+    address: curve,
+    abi: art("Mocks.sol", "Curve").abi,
+    functionName: "setMode",
+    args: [3],
+  });
+  await client.waitForTransactionReceipt({ hash });
+  await assert.rejects(exit());
+  assert.equal(await client.getBalance({ address: curve }), parseEther("1"));
 });

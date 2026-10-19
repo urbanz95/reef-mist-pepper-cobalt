@@ -1,5 +1,7 @@
 import { parseAbi } from "viem";
 import { BURN_ADDRESSES, assessTokenSecurity } from "../../src/lib/paper-risk.ts";
+import { isPons } from "../../src/lib/paper-venues.ts";
+import { ponsLiquidityProtection } from "./pons-market.mjs";
 const abi = parseAbi([
   "function totalSupply() view returns(uint256)",
   "function balanceOf(address) view returns(uint256)",
@@ -97,10 +99,26 @@ export async function liquidityProtection(client, pool, block) {
   }
 }
 export async function assessPoolSecurity(client, pool, snapshot, provider, now = Date.now()) {
-  const row = provider.get(pool.other),
-    lp = await liquidityProtection(client, pool, snapshot.block);
+  const row = provider.get(pool.other);
+  let lp;
+  try {
+    lp = isPons(pool.dex)
+      ? await ponsLiquidityProtection(client, pool, snapshot)
+      : await liquidityProtection(client, pool, snapshot.block);
+  } catch (e) {
+    lp = {
+      status: "unknown",
+      reason: `Pons identity/liquidity proof unavailable: ${(e.shortMessage ?? e.message).slice(0, 220)}`,
+    };
+  }
   return {
-    ...assessTokenSecurity(row?.raw, pool, row?.checkedAt ?? 0, now, lp),
+    ...assessTokenSecurity(row?.raw, pool, row?.checkedAt ?? 0, now, {
+      ...lp,
+      fraction: isPons(pool.dex) ? undefined : lp.fraction,
+    }),
     liquidityBlock: snapshot.block,
+    liquidityKind: isPons(pool.dex) ? "pons-permanent-seed" : "burned-lp",
+    protectedLiquidityFraction: lp.fraction,
+    liquidityEvidence: lp.evidence,
   };
 }

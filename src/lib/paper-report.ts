@@ -14,6 +14,7 @@ export const paperDecisionSchema = z.object({
 });
 export const paperReportSchema = z.object({
   version: z.literal(1),
+  executionProfile: z.literal("pons-v2").optional(),
   runId: z.string().regex(/^\d+$/),
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -23,6 +24,7 @@ export const paperReportSchema = z.object({
   verifiedQuotes: z.number(),
   errors: z.number(),
   securityChecks: z.number().optional(),
+  diagnosticProbes: z.number().optional(),
   chainObservations: z.number().optional(),
   securityProviderError: z.string().nullable().optional(),
   monitor: z
@@ -92,7 +94,24 @@ export const paperReportSchema = z.object({
         createdAt: z.number().optional(),
         firstSeenAt: z.string().optional(),
         lastSeenAt: z.string().optional(),
-        migrationStatus: z.literal("unconfirmed").optional(),
+        migrationStatus: z.enum(["unconfirmed", "confirmed"]).optional(),
+        stage: z.string().optional(),
+        liquidityKind: z.string().optional(),
+        protectedLiquidityFraction: amount.optional(),
+        lastSimulation: z
+          .object({
+            status: z.enum(["passed", "unavailable"]),
+            at: z.string(),
+            block: z.string().optional(),
+            inputEth: amount,
+            quantityRaw: z.string().optional(),
+            receivedEth: amount.optional(),
+            gasEth: amount.optional(),
+            recovery: amount.optional(),
+            costGatePassed: z.boolean().optional(),
+            reason: z.string().optional(),
+          })
+          .optional(),
         creationEvidence: z.string().optional(),
         creationTransaction: z.string().optional(),
         tvlUsd: z.number(),

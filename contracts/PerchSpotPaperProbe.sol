@@ -16,6 +16,10 @@ interface ISpotV3 {
     struct Params { address tokenIn; address tokenOut; uint24 fee; address recipient; uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96; }
     function exactInputSingle(Params calldata) external payable returns (uint256);
 }
+interface ISpotCurve {
+    function buy(uint256,uint256,address) external payable returns(uint256);
+    function sell(uint256,uint256,address) external returns(uint256);
+}
 interface ISpotV4 {
     struct SwapParams { bool zeroForOne; int256 amountSpecified; uint160 sqrtPriceLimitX96; }
     function unlock(bytes calldata) external returns (bytes memory);
@@ -40,7 +44,12 @@ contract SpotPaperWallet {
         require(msg.sender==owner,"owner");
         uint256 start=gasleft();
         uint256 principal=address(this).balance;
-        if (version==2) {
+        if(version==5){
+            bool nativeQuote=key.currency0==address(0);
+            if(!nativeQuote){ISpotWeth(weth).deposit{value:principal}();require(ISpotToken(weth).approve(executor,principal),"approve");}
+            ISpotCurve(executor).buy{value:nativeQuote?principal:0}(principal,1,address(this));
+            require(address(this).balance==0 && ISpotToken(weth).balanceOf(address(this))==0,"partial curve fill");
+        } else if (version==2) {
             address[] memory path=new address[](2); path[0]=weth; path[1]=token;
             ISpotV2(executor).swapExactETHForTokens{value:principal}(1,path,address(this),block.timestamp);
         } else {
@@ -68,7 +77,10 @@ contract SpotPaperWallet {
     }
     function sell(uint256 bought) private returns(uint256 recovered,uint256 exitGas) {
         uint256 start=gasleft();
-        if (version==2) {
+        if(version==5){
+            require(ISpotToken(token).approve(executor,bought),"approve");
+            ISpotCurve(executor).sell(bought,1,address(this));
+        } else if (version==2) {
             require(ISpotToken(token).approve(executor,bought),"approve");
             address[] memory path=new address[](2); path[0]=token; path[1]=weth;
             ISpotV2(executor).swapExactTokensForETH(bought,1,path,address(this),block.timestamp);

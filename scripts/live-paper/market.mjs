@@ -17,7 +17,8 @@ import {
 import { POLICY } from "../../src/lib/degen-policy.ts";
 import { createPoolProvider, METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { sampleSpotPool } from "./spot-market.mjs";
-import { LAUNCH_DISCOVERY_PATHS } from "./universe.mjs";
+import { paperVersion, nativeFunding, hashPoolId } from "../../src/lib/paper-venues.ts";
+import { LAUNCH_DISCOVERY_PATHS, PONS_DISCOVERY_PATHS } from "./universe.mjs";
 const RPC = "https://rpc.mainnet.chain.robinhood.com";
 const GECKO = "https://api.geckoterminal.com/api/v2/networks/robinhood";
 const allowedMethods = new Set([
@@ -70,21 +71,16 @@ export function normalizePools(json, launch = false) {
       const isFunding = (t) =>
         t.toLowerCase() === CONTRACTS.weth.toLowerCase() ||
         (launch &&
-          dex === "uniswap-v4-robinhood" &&
+          nativeFunding(dex) &&
           [zeroAddress, "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"].includes(t.toLowerCase()));
       const isWeth = [t0.address, t1.address].some(isFunding);
-      const executionBlock = !(
-        launch
-          ? ["uniswap-v2-robinhood", "uniswap-v3-robinhood", "uniswap-v4-robinhood"]
-          : ["uniswap-v3-robinhood"]
-      ).includes(dex)
+      const executionBlock = !(launch ? paperVersion(dex) : dex === "uniswap-v3-robinhood")
         ? `Unsupported DEX: ${dex ?? "unknown"}; observation only`
         : !isWeth
           ? "Unsupported quote token; executor requires canonical WETH"
-          : !new RegExp(
-                dex === "uniswap-v4-robinhood" ? "^0x[0-9a-f]{64}$" : "^0x[0-9a-f]{40}$",
-                "i",
-              ).test(a.address)
+          : !new RegExp(hashPoolId(dex) ? "^0x[0-9a-f]{64}$" : "^0x[0-9a-f]{40}$", "i").test(
+                a.address,
+              )
             ? "Unsupported pool identifier"
             : null;
       const tvlUsd = Number(a.reserve_in_usd),
@@ -146,7 +142,11 @@ async function feed(path) {
 const provider = createPoolProvider(
   feed,
   Date.now,
-  ["launch", "guarded"].includes(process.env.PAPER_STRATEGY) ? LAUNCH_DISCOVERY_PATHS : undefined,
+  process.env.PAPER_STRATEGY === "guarded"
+    ? PONS_DISCOVERY_PATHS
+    : process.env.PAPER_STRATEGY === "launch"
+      ? LAUNCH_DISCOVERY_PATHS
+      : undefined,
 );
 export const seedProvider = (pools) => provider.seed(pools);
 export const discover = () => provider.discover();
