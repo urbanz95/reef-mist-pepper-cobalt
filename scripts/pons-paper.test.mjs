@@ -1,7 +1,7 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { encodeAbiParameters, zeroAddress } from "viem";
+import { encodeAbiParameters, getAddress, zeroAddress } from "viem";
 import { resolvePonsMeta, ponsLiquidityProtection } from "./live-paper/pons-market.mjs";
 import { poolKeyHash } from "./live-paper/pool-key.mjs";
 import { normalizePools } from "./live-paper/market.mjs";
@@ -10,10 +10,10 @@ import { CONTRACTS } from "../src/lib/chain.ts";
 import { PONS_STACKS } from "../src/lib/pons-contracts.ts";
 import { createRiskMonitor, riskFromLog } from "./live-paper/risk-monitor.mjs";
 import { paperReportSchema } from "../src/lib/paper-report.ts";
-import { sampleSpotPool } from "./live-paper/spot-market.mjs";
+import { resolveSpotMeta, sampleSpotPool } from "./live-paper/spot-market.mjs";
 import { paperVersion } from "../src/lib/paper-venues.ts";
 const runtime = JSON.parse(readFileSync(new URL("./fixtures/pons-runtime.json", import.meta.url)));
-const token = "0x" + "12".repeat(20),
+const token = "0x" + "ab".repeat(20),
   curve = "0x" + "34".repeat(20),
   stack = PONS_STACKS[0],
   snap = { block: "100" };
@@ -106,7 +106,10 @@ it("Pons curve and graduated identifiers permit native ETH only in the paper pro
   assert.match(normalizePools(json, true)[0].executionBlock, /Unsupported DEX/);
 });
 it("high-cost Pons execution is observable diagnostically but cannot pass the entry probe", async () => {
-  const client = fake({ read: { getSlot0: [2n ** 96n, 0, 0, 0] } });
+  const client = fake({
+    record: { token: getAddress(token) },
+    read: { getSlot0: [2n ** 96n, 0, 0, 0] },
+  });
   client.call = async () => ({
     data: encodeAbiParameters(
       Array.from({ length: 4 }, () => ({ type: "uint256" })),
@@ -125,6 +128,11 @@ it("high-cost Pons execution is observable diagnostically but cannot pass the en
   assert.equal(measured.roundTripOk, false);
   assert.equal(measured.executionRecovery, 0.95);
   assert.equal(measured.quantityRaw, "1000000000000000000");
+  assert.equal(
+    measured.token,
+    market.other,
+    "RPC checksum case must match the security token identity",
+  );
 });
 it("registered Pons V4 identity requires matching generation, code, currencies, curve and phase", async () => {
   const m = await resolvePonsMeta(fake(), pool, snap);
@@ -141,6 +149,28 @@ it("registered Pons V4 identity requires matching generation, code, currencies, 
     { read: { poolKeys: [zeroAddress, token, 0, 200, token] } },
   ])
     await assert.rejects(resolvePonsMeta(fake(options), pool, snap));
+});
+it("canonical V2/V3/V4 RPC addresses retain the same identity as lowercase discovery and security records", async () => {
+  for (const version of [2, 3, 4]) {
+    const v4key = { ...key, currency1: getAddress(token), hooks: zeroAddress },
+      id = version === 4 ? poolKeyHash(v4key) : "0x" + String(40 + version).repeat(20),
+      market = { id, other: token, dex: `uniswap-v${version}-robinhood` };
+    const read = {
+      token0: CONTRACTS.weth,
+      token1: getAddress(token),
+      getPair: id,
+      getPool: id,
+      fee: 3000,
+      decimals: 18,
+      poolKeys: Object.values(v4key),
+    };
+    const meta = await resolveSpotMeta(
+      { readContract: async ({ functionName }) => read[functionName], getLogs: async () => [] },
+      market,
+      snap,
+    );
+    assert.equal(meta.other, market.other);
+  }
 });
 it("closed sell side, swept and rescued phases refuse curve entries; state is never cached across blocks", async () => {
   const client = fake({ record: { phase: 0 }, read: { graduated: false, readyToGraduate: false } });

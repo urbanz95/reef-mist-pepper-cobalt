@@ -143,7 +143,7 @@ export async function resolvePonsMeta(client, pool, snapshot) {
   const value = {
     version,
     key,
-    other: record.token,
+    other: record.token.toLowerCase(),
     decimals,
     funding0: same(key.currency0, record.pairToken),
     curve: record.curve,
