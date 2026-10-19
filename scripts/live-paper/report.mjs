@@ -1,5 +1,9 @@
 const eth = (n) => (n === null ? "unknown" : n.toFixed(8));
 const safe = (s) => String(s).replaceAll("|", "/").replaceAll("\n", " ");
+const providerSummary = (r) =>
+  r.securityProvider
+    ? `Token security: ${r.securityProvider.available} current responses, ${r.securityProvider.pending} queued, ${r.securityProvider.stale} expired, ${r.securityProvider.missingTokens} without a provider record, ${r.securityProvider.failedTokens} request errors. Received data still requires all security checks.\n\n`
+    : "";
 export function completeReport(run) {
   const trades = run.books.flatMap((b) => b.ledger ?? []);
   const books = run.books.map((b) => {
@@ -30,7 +34,7 @@ export function reportMarkdown(r) {
       return `| ${safe(p.label)} | ${p.id} | ${p.stage ?? "unknown"} | ${q.status === "passed" ? "buy/sell measured" : "unavailable"} | ${q.at} | ${q.block ?? "unknown"} | ${eth(q.inputEth)} | ${q.quantityRaw ?? "unknown"} | ${q.receivedEth === undefined ? "unknown" : eth(q.receivedEth)} | ${q.gasEth === undefined ? "unknown" : eth(q.gasEth)} | ${q.recovery === undefined ? "unknown" : (100 * q.recovery).toFixed(2) + "%"} | ${q.costGatePassed === undefined ? "unknown" : q.costGatePassed ? "passed" : "rejected"} | ${safe(q.reason ?? "")} |`;
     })
     .join("\n");
-  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Read-only execution diagnostics\n\nThese calls use no money and do not book positions. A successful buy/sell can still fail cost or security admission.\n\n| Pool | Address | Stage | Execution | UTC | Block | Input ETH | Raw token quantity | Sale-only ETH | Two-leg gas ETH | Immediate recovery before gas | 3% entry-loss gate | Reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n${diagnosticRows || "| No diagnostics yet |"}\n\n## Decision counts\n\n${Object.entries(
+  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n${providerSummary(r)}## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Read-only execution diagnostics\n\nThese calls use no money and do not book positions. A successful buy/sell can still fail cost or security admission.\n\n| Pool | Address | Stage | Execution | UTC | Block | Input ETH | Raw token quantity | Sale-only ETH | Two-leg gas ETH | Immediate recovery before gas | 3% entry-loss gate | Reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n${diagnosticRows || "| No diagnostics yet |"}\n\n## Decision counts\n\n${Object.entries(
     r.reasons,
   )
     .map(([k, v]) => `- ${v} × ${k}`)
@@ -92,9 +96,17 @@ export function reportFiles(r) {
     "trades.csv": csv(r.trades),
     "pools.csv": csv(
       r.poolCoverage.map((p) => {
-        const { lastSimulation, ...row } = p;
+        const { lastSimulation, securityData, ...row } = p;
         return {
           ...row,
+          ...(securityData
+            ? {
+                securityDataStatus: securityData.status,
+                securityDataCheckedAt: securityData.checkedAt,
+                securityDataRequestedAt: securityData.requestedAt,
+                securityDataDetail: securityData.detail,
+              }
+            : {}),
           ...(lastSimulation
             ? {
                 simulationStatus: lastSimulation.status,

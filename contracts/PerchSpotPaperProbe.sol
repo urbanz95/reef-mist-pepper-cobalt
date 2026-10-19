@@ -90,6 +90,7 @@ contract SpotPaperWallet {
         } else {
             ISpotV4(executor).unlock(abi.encode(false,bought));
         }
+        require(ISpotToken(token).balanceOf(address(this))==0,"partial token sale");
         uint256 wrapped=ISpotToken(weth).balanceOf(address(this));
         if(wrapped>0) ISpotWeth(weth).withdraw(wrapped);
         recovered=address(this).balance;

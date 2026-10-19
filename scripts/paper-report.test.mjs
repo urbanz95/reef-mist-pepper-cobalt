@@ -26,6 +26,27 @@ it("Pons diagnostics survive public serialization and exports without turning re
   const parsed = paperReportSchema.parse({
     ...report,
     executionProfile: "pons-v2",
+    securityProfile: "single-token-v1",
+    securityProvider: {
+      requests: 2,
+      responses: 2,
+      missing: 1,
+      failures: 0,
+      tracked: 2,
+      available: 1,
+      pending: 0,
+      stale: 0,
+      missingTokens: 1,
+      failedTokens: 0,
+    },
+    entryScreening: {
+      observed: 10,
+      liquidityEligible: 2,
+      selected: 2,
+      approved: 0,
+      rejected: 0,
+      unknown: 2,
+    },
     diagnosticProbes: 1,
     trades: [],
     poolCoverage: [
@@ -41,6 +62,14 @@ it("Pons diagnostics survive public serialization and exports without turning re
         failures: 0,
         lastReason: "Token safety unknown",
         securityStatus: "unknown",
+        entryBlockReason: "Entry requires graduation",
+        securityData: {
+          status: "missing",
+          checkedAt: 0,
+          requestedAt: 1000,
+          detail: "Provider omitted this token",
+          raw: "must be stripped",
+        },
         liquidityKind: "pons-permanent-seed",
         protectedLiquidityFraction: 1,
         lastSimulation: {
@@ -59,6 +88,8 @@ it("Pons diagnostics survive public serialization and exports without turning re
   });
   assert.equal(parsed.poolCoverage[0].securityStatus, "unknown");
   assert.equal(parsed.poolCoverage[0].lastSimulation.costGatePassed, false);
+  assert.equal(parsed.poolCoverage[0].securityData.status, "missing");
+  assert.equal("raw" in parsed.poolCoverage[0].securityData, false);
   assert.equal(parsed.trades.length, 0);
   const files = reportFiles({
     ...parsed,
@@ -71,6 +102,9 @@ it("Pons diagnostics survive public serialization and exports without turning re
   }
   assert.match(files["report.html"], /95.00%/);
   assert.match(files["pools.csv"], /simulationCostGatePassed/);
+  assert.match(files["pools.csv"], /securityDataStatus/);
+  assert.match(files["pools.csv"], /Provider omitted this token/);
+  assert.match(files["report.html"], /1 without a provider record/);
 });
 it("report preserves unknown PnL, strips private/unrelated fields and detects stalled running updates", () => {
   const parsed = paperReportSchema.parse({ ...report, secret: "never publish" });

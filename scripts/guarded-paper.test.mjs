@@ -90,6 +90,19 @@ it("unknown security, stale data, wrong quantity/block, high costs and unverifie
   for (const transform of transforms)
     assert.equal(entered(false, transform).book.positions.length, 0);
 });
+it("a fresh buy/sell success cannot admit a quantity whose independent liquidation already breaches the position loss trigger", () => {
+  for (const proceeds of [0, 0.000001, 0.0018]) {
+    const result = entered(false, (p) => ({
+      ...p,
+      priceEth: 1000 + (p.fetchedAt - t0),
+      entryExitQuote: { ...p.entryExitQuote, receivedEth: proceeds },
+    }));
+    assert.equal(result.book.positions.length, 0);
+    assert.equal(result.book.cash, 0.1);
+    assert.equal(result.book.ledger.length, 0);
+  }
+  assert.equal(entered(false).book.positions.length, 1);
+});
 it("same token in different fee pools or shared issuer/large holder cannot create correlated simultaneous positions", () => {
   for (const type of ["token", "actor"]) {
     const { book } = entered(true, (p) =>
@@ -258,6 +271,22 @@ it("explicit source, powers, zero taxes, holder coverage and on-chain LP proof a
     assess(raw(), { status: "rejected", fraction: 0, reason: "LP unprotected" }).status,
     "rejected",
   );
+});
+it("only a proved permanent holder is excluded from dumpable concentration; provider lock labels do not qualify", () => {
+  const r = raw();
+  r.holders[0] = { address: addr(30), percent: ".081633", is_locked: 1 };
+  assert.equal(assess(r).status, "rejected");
+  const proof = {
+    status: "approved",
+    reason: "pinned permanent locker",
+    permanentHolders: [addr(30)],
+  };
+  const result = assess(r, proof);
+  assert.equal(result.status, "approved");
+  assert.ok(!result.actors.includes(addr(30)));
+  assert.equal(assess(r, { ...proof, status: "unknown" }).status, "rejected");
+  r.holders[1] = { address: addr(31), percent: ".06" };
+  assert.equal(assess(r, proof).status, "rejected");
 });
 it("liquidity proof requires 95% burned canonical V2 LP, not a provider claim of a lock", async () => {
   const client = {
