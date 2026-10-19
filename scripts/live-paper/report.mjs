@@ -4,11 +4,13 @@ export function completeReport(run) {
   const trades = run.books.flatMap((b) => b.ledger ?? []);
   const books = run.books.map((b) => {
     const closed = (b.ledger ?? []).filter((t) => t.exitAt);
-    const open = (b.ledger ?? []).find((t) => !t.exitAt);
+    const open = (b.ledger ?? []).filter((t) => !t.exitAt);
     return {
       ...b,
       realizedPnlEth: closed.reduce((n, t) => n + t.pnlEth, 0),
-      openPnlEth: open?.pnlEth ?? (open ? null : 0),
+      openPnlEth: open.some((t) => t.pnlEth === null)
+        ? null
+        : open.reduce((n, t) => n + t.pnlEth, 0),
       totalPnlEth: b.value === null ? null : b.value - b.initial,
     };
   });

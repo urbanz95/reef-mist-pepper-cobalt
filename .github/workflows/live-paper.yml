@@ -15,8 +15,8 @@ on:
       strategy:
         description: "Paper strategy"
         type: choice
-        options: [baseline, carry48, launch]
-        default: launch
+        options: [guarded]
+        default: guarded
       universe:
         description: "Discovered WETH pools, or USDG-only control"
         type: choice
@@ -36,7 +36,7 @@ jobs:
     uses: ./.github/workflows/paper-segment.yml
     with:
       duration: ${{ inputs.duration_minutes || '240' }}
-      strategy: ${{ inputs.strategy || 'launch' }}
+      strategy: ${{ inputs.strategy || 'guarded' }}
       capitals: ${{ inputs.capitals || '0.1,0.5' }}
       universe: ${{ inputs.universe || 'discovered' }}
       segment: 1
@@ -47,7 +47,7 @@ jobs:
     uses: ./.github/workflows/paper-segment.yml
     with:
       duration: ${{ inputs.duration_minutes || '240' }}
-      strategy: ${{ inputs.strategy || 'launch' }}
+      strategy: ${{ inputs.strategy || 'guarded' }}
       capitals: ${{ inputs.capitals || '0.1,0.5' }}
       universe: ${{ inputs.universe || 'discovered' }}
       segment: 2

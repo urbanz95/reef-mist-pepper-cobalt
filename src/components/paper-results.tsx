@@ -59,7 +59,10 @@ export function PaperResults() {
   const stale = report ? paperReportStale(report, now) : false;
   const trades = report?.trades?.filter((t) => t.capital === book?.initial) ?? [];
   const closedPnl = trades.filter((t) => t.exitAt).reduce((n, t) => n + (t.pnlEth ?? 0), 0);
-  const openTrade = trades.find((t) => !t.exitAt);
+  const openTrades = trades.filter((t) => !t.exitAt);
+  const openPnl = openTrades.some((t) => t.pnlEth === null)
+    ? null
+    : openTrades.reduce((n, t) => n + t.pnlEth!, 0);
   const duration = (seconds: number) =>
     `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${Math.floor(seconds % 60)}s`;
   function downloadTrades() {
@@ -76,6 +79,7 @@ export function PaperResults() {
       "costsETH",
       "positionPnlETH",
       "exitReason",
+      "quantityRaw",
     ];
     const rows = trades.map((t) => [
       t.label,
@@ -90,6 +94,7 @@ export function PaperResults() {
       t.costsEth,
       t.pnlEth,
       t.exitReason ?? "Open",
+      t.quantityRaw ?? "",
     ]);
     const cell = (value: unknown) =>
       '"' +
@@ -193,9 +198,56 @@ export function PaperResults() {
             ))}
           </dl>
           <p className="mt-3 break-all text-sm">
-            Strategy: {book.strategy ?? "baseline"} · Position: {pool(book.state.current)} ·{" "}
-            {book.state.halted ? "Risk stop latched" : "No active risk stop"}
+            Strategy: {book.strategy ?? "baseline"} ·{" "}
+            {book.strategy === "guarded"
+              ? `Open positions: ${book.positions?.length ?? 0} / 2`
+              : `Position: ${pool(book.state.current)}`}{" "}
+            · {book.state.halted ? "Risk stop latched" : "No active risk stop"}
           </p>
+          {book.strategy === "guarded" && (
+            <div className="mt-3 rounded-lg bg-surface-2 p-4 text-sm">
+              <p>
+                Unallocated ETH: <strong>{eth(book.cash ?? null)}</strong> · Maximum 2% per
+                position, 4% combined at entry.
+              </p>
+              <p className="mt-2 text-xs text-muted">
+                Liquidity and token security proof required. Unknown checks block entries. V3/V4
+                withdrawal permissions and unsupported lockers are currently unverified and remain
+                observation-only.
+              </p>
+              {report.monitor && (
+                <p className="mt-2 text-xs">
+                  Block monitor:{" "}
+                  {report.monitor.healthy && !stale ? "Connected" : "Unavailable / stale"} · Last
+                  scanned block: {report.monitor.lastBlock ?? "Unknown"} ·{" "}
+                  {report.securityChecks ?? 0} security checks
+                </p>
+              )}
+              {report.securityProviderError && (
+                <p className="mt-2 text-xs">
+                  Security provider: {report.securityProviderError}. Missing or expired checks block
+                  new entries.
+                </p>
+              )}
+              {book.positions?.map((p) => (
+                <div key={p.id} className="mt-3 border-t border-white/10 pt-3">
+                  <p className="break-words">
+                    {p.label} · Allocated {eth(p.allocationEth)} · Net sale estimate{" "}
+                    {eth(p.markedValueEth)}
+                  </p>
+                  <p className="mt-1 break-all font-mono text-xs">
+                    Held quantity (raw units): {p.quantityRaw}
+                  </p>
+                  {p.exitRequested && (
+                    <p className="mt-1 text-xs">
+                      Exit requested: {p.exitRequested}. A successful exact-quantity sale is
+                      required to close.
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           <p className="mt-2 text-xs text-muted">
             {report.samples} observations · {report.verifiedQuotes} buy/sell probes (not trades) ·{" "}
             {report.errors} data errors · {operations.length} simulated operations for this balance
@@ -206,7 +258,7 @@ export function PaperResults() {
               <div className="my-3 flex flex-wrap items-center justify-between gap-3 text-sm">
                 <p>
                   Closed-position PnL: <strong>{eth(closedPnl)}</strong> · Open-position PnL:{" "}
-                  <strong>{eth(openTrade ? openTrade.pnlEth : 0)}</strong>
+                  <strong>{eth(openPnl)}</strong>
                 </p>
                 <Button variant="secondary" onClick={downloadTrades}>
                   Download positions CSV
@@ -216,8 +268,8 @@ export function PaperResults() {
                 <div className="overflow-x-auto rounded-lg bg-surface-2">
                   <table className="w-full text-left text-xs">
                     <caption className="p-3 text-left text-muted">
-                      Per-position ledger · estimated ETH values after charged costs. Times use your
-                      local timezone.
+                      Per-position ledger · estimated net ETH values. Guarded marks include
+                      estimated exit gas. Times use your local timezone.
                     </caption>
                     <thead>
                       <tr>
@@ -351,8 +403,9 @@ export function PaperResults() {
                 Other pools screened ({report.poolCoverage.length})
               </summary>
               <p className="mt-3 text-xs text-muted">
-                At most six pools are probed per sample, with two fee tiers per token. Eligibility
-                is experimental, not a security approval.
+                Up to six entry candidates are checked per sample, with two fee tiers per token.
+                Held positions are also monitored. Eligibility is experimental, not a security
+                approval.
               </p>
               <ul className="mt-3 space-y-3">
                 {report.poolCoverage.map((p) => (
@@ -370,6 +423,21 @@ export function PaperResults() {
                       <span>{p.label}</span>
                     )}
                     {p.dex && <p className="mt-1 text-muted">{p.dex}</p>}
+                    {p.securityStatus && (
+                      <p className="mt-1">
+                        Security: {p.securityStatus}
+                        {p.burnedLpFraction !== undefined
+                          ? ` · Provably burned LP: ${(p.burnedLpFraction * 100).toFixed(2)}%`
+                          : ""}
+                      </p>
+                    )}
+                    {p.securityReasons?.length ? (
+                      <ul className="mt-1 list-inside list-disc text-muted">
+                        {p.securityReasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                     {p.migrationStatus && (
                       <p className="mt-1 text-muted">
                         Migration unconfirmed · {p.creationEvidence?.replaceAll("_", " ")}
@@ -396,12 +464,14 @@ export function PaperResults() {
             </details>
           )}
           <p className="mt-4 text-xs text-muted">
-            {book.strategy === "launch"
-              ? "Launch uses an approximate spot valuation, charges execution costs and earns no LP fees. "
-              : "PnL includes modeled fees and charged costs, using an approximate LP valuation. "}
-            It excludes uncharged future exit costs and is not a guaranteed cash-out value. Unknown
-            valuations stay unknown. All selected pools are paper-only experiments; these results do
-            not establish profitability or token safety.
+            {book.strategy === "guarded"
+              ? "Guarded spot PnL uses a sale-only simulation of the held token quantity, including pool fees/impact and estimated exit gas. Unknown or failed sales remain open with unknown value. Stops cannot guarantee a fill. "
+              : book.strategy === "launch"
+                ? "Launch uses an approximate spot valuation, charges execution costs and earns no LP fees. "
+                : "PnL includes modeled fees and charged costs, using an approximate LP valuation. "}
+            {book.strategy !== "guarded" && "It excludes uncharged future exit costs. "}This is not
+            a guaranteed cash-out value. Unknown valuations stay unknown. All selected pools are
+            paper-only experiments; these results do not establish profitability or token safety.
           </p>
         </>
       )}

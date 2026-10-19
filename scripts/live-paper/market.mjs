@@ -28,6 +28,7 @@ const allowedMethods = new Set([
   "eth_estimateGas",
   "eth_gasPrice",
   "eth_getLogs",
+  "eth_getCode",
 ]);
 export function readOnlyProvider(provider) {
   return {
@@ -39,7 +40,9 @@ export function readOnlyProvider(provider) {
   };
 }
 const wire = http(RPC, { timeout: 10000, retryCount: 0 })({});
-const client = createPublicClient({ transport: custom(readOnlyProvider(wire), { retryCount: 0 }) });
+export const client = createPublicClient({
+  transport: custom(readOnlyProvider(wire), { retryCount: 0 }),
+});
 const abi = parseAbi([
   "function token0() view returns (address)",
   "function token1() view returns (address)",
@@ -129,7 +132,10 @@ async function feed(path) {
   const age = Number(res.headers.get("age") ?? 0);
   if (!Number.isFinite(age) || age < 0) throw new Error("Invalid provider cache age");
   return {
-    pools: normalizePools(await res.json(), process.env.PAPER_STRATEGY === "launch").map((p) => ({
+    pools: normalizePools(
+      await res.json(),
+      ["launch", "guarded"].includes(process.env.PAPER_STRATEGY),
+    ).map((p) => ({
       ...p,
       fetchedAt: started - age * 1000,
     })),
@@ -140,7 +146,7 @@ async function feed(path) {
 const provider = createPoolProvider(
   feed,
   Date.now,
-  process.env.PAPER_STRATEGY === "launch" ? LAUNCH_DISCOVERY_PATHS : undefined,
+  ["launch", "guarded"].includes(process.env.PAPER_STRATEGY) ? LAUNCH_DISCOVERY_PATHS : undefined,
 );
 export const seedProvider = (pools) => provider.seed(pools);
 export const discover = () => provider.discover();
