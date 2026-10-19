@@ -93,6 +93,7 @@ it("concurrent refreshes share the same paced worker; missing records are not re
   await h.provider.refresh([addr(1), addr(2)]);
   assert.equal(h.calls.length, 2);
   assert.equal(h.provider.snapshot.missingTokens, 2);
+  assert.equal(h.provider.dataStatus(addr(99)).status, "not_requested");
 });
 it("known unsupported liquidity routes and recent rejections do not occupy six entry-confirmation slots", () => {
   const pools = Array.from({ length: 8 }, (_, i) => ({

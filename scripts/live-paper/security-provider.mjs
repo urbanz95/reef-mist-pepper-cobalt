@@ -22,7 +22,9 @@ export function createSecurityProvider(fetcher = fetch, now = Date.now, { wait =
       : row?.error
         ? "error"
         : row?.lastAttemptAt === undefined
-          ? "pending"
+          ? wanted.includes(token.toLowerCase())
+            ? "pending"
+            : "not_requested"
           : "missing";
     return {
       status,

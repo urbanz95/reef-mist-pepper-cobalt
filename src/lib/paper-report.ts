@@ -150,7 +150,7 @@ export const paperReportSchema = z.object({
         entryBlockReason: z.string().nullable().optional(),
         securityData: z
           .object({
-            status: z.enum(["available", "stale", "pending", "missing", "error"]),
+            status: z.enum(["available", "stale", "pending", "not_requested", "missing", "error"]),
             checkedAt: z.number(),
             requestedAt: z.number().optional(),
             detail: z.string().optional(),

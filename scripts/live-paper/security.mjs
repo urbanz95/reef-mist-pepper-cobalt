@@ -70,6 +70,7 @@ export async function assessPoolSecurity(client, pool, snapshot, provider, now =
   });
   if (providerData && providerData.status !== "available") {
     const reasons = {
+      not_requested: "Token security not requested; outside the active screening budget",
       pending: "Token security request queued; no token-specific response received yet",
       missing: "Security provider returned no record for this token",
       error: `Token security request failed: ${providerData.detail}`,
