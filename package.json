@@ -19,7 +19,7 @@
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/degen-auth.test.ts src/lib/degen-logic.test.ts src/lib/degen-policy.test.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test:degen": "node --test scripts/perch-degen.test.mjs scripts/keeper-execution.test.mjs scripts/keeper-runtime.test.mjs src/lib/degen-auth.test.ts src/lib/degen-logic.test.ts src/lib/degen-policy.test.ts scripts/live-paper.test.mjs scripts/launch-paper.test.mjs scripts/paper-report.test.mjs scripts/paper-ledger.test.mjs scripts/paper-provider.test.mjs scripts/guarded-paper.test.mjs scripts/spot-probe.test.mjs",
+    "test:degen": "node --test scripts/perch-degen.test.mjs scripts/keeper-execution.test.mjs scripts/keeper-runtime.test.mjs src/lib/degen-auth.test.ts src/lib/degen-logic.test.ts src/lib/degen-policy.test.ts scripts/live-paper.test.mjs scripts/launch-paper.test.mjs scripts/paper-report.test.mjs scripts/paper-ledger.test.mjs scripts/paper-provider.test.mjs scripts/guarded-paper.test.mjs scripts/spot-probe.test.mjs scripts/pons-paper.test.mjs",
     "keeper:worker": "node scripts/keeper-worker.mjs",
     "test:degen:fork": "node scripts/degen-fork-test.mjs",
     "test:paper:live": "node scripts/live-paper/run.mjs"

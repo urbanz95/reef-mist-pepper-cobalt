@@ -10,7 +10,7 @@ import { client, discover, currentPool, chainSnapshot, seedProvider } from "./ma
 import { resolveSpotMeta, sampleSpotPool, quoteHeldExit, spotDepth } from "./spot-market.mjs";
 import { createSecurityProvider, assessPoolSecurity } from "./security.mjs";
 import { createRiskMonitor } from "./risk-monitor.mjs";
-import { selectLaunchPools } from "./universe.mjs";
+import { selectLaunchPools, selectPonsDiagnostics } from "./universe.mjs";
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
 import { createPublisher } from "./publish.mjs";
@@ -43,6 +43,7 @@ const publish = createPublisher(),
   security = createSecurityProvider();
 let run = {
   version: 1,
+  executionProfile: "pons-v2",
   runId: process.env.GITHUB_RUN_ID ?? "0",
   segment,
   segments,
@@ -53,6 +54,7 @@ let run = {
   samples: 0,
   validFeeds: 0,
   verifiedQuotes: 0,
+  diagnosticProbes: 0,
   securityChecks: 0,
   chainObservations: 0,
   errors: 0,
@@ -74,7 +76,8 @@ let run = {
     "A sale-only eth_call uses the EXACT quantity virtually held, with a proved ERC20 balance storage override. It does not buy first or alter pool reserves. Unsupported token accounting, stale quotes and reverts produce UNKNOWN value; no invented fills.",
     "Reported positions are hypothetical independent of the real pool: paper buys do not change future chain state. Sale quotes include pool fees/impact and an exit gas estimate, with 51,000 gas allowance and 50% margin. Additional data fees are excluded. These are not transaction receipts.",
     "Entry requires fresh explicit GoPlus negatives, verified source, no proxy/mint/tax/blacklist/control flags, creator/owner <=1%, each observed non-pool holder <=5%, observed top holders <=20%, and holder distribution coverage. Unknown or expired information blocks entry.",
-    "Only canonical V2 pools with at least 95% of LP supply provably at zero/dead burn addresses currently have an automatic liquidity proof. Other locker contracts and V3/V4 position ownership/withdrawal rights are not fully verified and remain observation-only.",
+    "Liquidity proof supports canonical V2 >=95% burned LP, and registered Pons V4 permanent seed positions with a pinned reviewed locker runtime, matching pool/range/owner, no NFT approval and >=95% of active liquidity. Curves, unreviewed earlier lockers and generic V3/V4 remain observation-only for entries.",
+    "Pons curves and graduated V4 pools have separate identity, stage and read-only execution probes. Up to one curve and one graduated pool are diagnostically tested every 30 seconds even when entry gates fail. Passing an execution probe does not authorize a trade. Partial curve fills and closed graduation phases are rejected, not booked as full purchases.",
     "Issuer/owner/shared top-three-holder addresses prevent correlated simultaneous entries. This is limited address correlation, not a complete related-wallet or funding-graph investigation. Burning LP alone does not eliminate token/market risk.",
     "The block monitor polls every second and scans every intervening block in bounded ranges. Liquidity burns/removals, reserve falls, mints and ownership changes request exit. Normal valuation targets five seconds; slow RPC can delay it. A rug within one transaction may complete before detection or exit.",
     "A confirmed entry requires two minutes of price history and a further two minutes of momentum persistence, with rise >=max(0.5%, twice measured costs/allocation). Per-position net profit target 1%, loss trigger 3%, trailing trigger 2%, depth drop 30%, maximum hold 30 minutes. Stops cannot guarantee execution or a loss limit.",
@@ -100,6 +103,7 @@ const monitor = createRiskMonitor(client, Date.now, run.monitorCheckpoint);
 let stopped = false,
   feed = null,
   lastFeedAttempt = 0;
+let lastDiagnostics = 0;
 process.on("SIGTERM", () => {
   stopped = true;
 });
@@ -116,6 +120,8 @@ async function heldForMonitor() {
       ...p,
       dex: metadata.get(p.pool)?.dex,
       funding0: metadata.get(p.pool)?.funding0,
+      watchPool: metadata.get(p.pool)?.executionId,
+      factory: metadata.get(p.pool)?.factory,
     }));
 }
 async function save(final = false) {
@@ -221,6 +227,9 @@ try {
           (universe === "discovered" || tokens.includes(p.other)),
       );
       const selection = selectLaunchPools(eligible, run.probeWindow, start);
+      const diagnostics =
+        !alarm && start - lastDiagnostics >= 30000 ? selectPonsDiagnostics(ranked, start) : [];
+      if (diagnostics.length) lastDiagnostics = start;
       run.probeWindow = selection.window;
       const held = run.books.flatMap((b) => b.positions ?? []);
       // Restore held metadata even if discovery rotates away from these pools.
@@ -231,9 +240,11 @@ try {
         }
       const selected = [
         ...new Map(
-          [...held.map((p) => metadata.get(p.pool)).filter(Boolean), ...selection.selected].map(
-            (p) => [p.id, p],
-          ),
+          [
+            ...held.map((p) => metadata.get(p.pool)).filter(Boolean),
+            ...selection.selected,
+            ...diagnostics,
+          ].map((p) => [p.id, p]),
         ).values(),
       ];
       await security.refresh(selected.map((p) => p.other));
@@ -252,6 +263,8 @@ try {
             c.securityReasons = assessment.reasons;
             c.securityCheckedAt = assessment.checkedAt;
             c.burnedLpFraction = assessment.burnedLpFraction;
+            c.liquidityKind = assessment.liquidityKind;
+            c.protectedLiquidityFraction = assessment.protectedLiquidityFraction;
             c.lastReason =
               assessment.status === "approved"
                 ? "Security gates passed; awaiting price/cost confirmation"
@@ -259,6 +272,60 @@ try {
           }
         }),
       );
+      // Diagnostic calls are evidence only. They never become engine candidates.
+      for (const pool of diagnostics) {
+        const c = run.poolCoverage.find((c) => c.id === pool.id),
+          input = run.books[0].initial * 0.02 * 0.95;
+        run.diagnosticProbes = (run.diagnosticProbes ?? 0) + 1;
+        try {
+          const snap = await chainSnapshot();
+          const m = await resolveSpotMeta(client, pool, snap);
+          if (c) {
+            c.stage = m.stage;
+            c.migrationStatus = m.stage === "graduated" ? "confirmed" : "unconfirmed";
+            c.creationEvidence = m.evidence.status;
+          }
+          const p = await sampleSpotPool(client, pool, input, pool.fetchedAt, snap, {
+              diagnosticOnly: true,
+            }),
+            q = await quoteHeldExit(client, pool, p.quantityRaw, snap);
+          run.verifiedQuotes += 2;
+          record.markets.push({
+            ...p,
+            capital: run.books[0].initial,
+            diagnosticOnly: true,
+            security: assessments.get(pool.id),
+          });
+          record.exitQuotes.push({ ...q, diagnosticOnly: true });
+          if (c) {
+            c.probes++;
+            c.stage = p.stage;
+            c.migrationStatus = p.migrationStatus;
+            c.creationEvidence = p.creationEvidence.status;
+            c.lastSimulation = {
+              status: "passed",
+              at: new Date().toISOString(),
+              block: snap.block,
+              inputEth: input,
+              quantityRaw: p.quantityRaw,
+              receivedEth: q.receivedEth,
+              gasEth: p.buyGasEth + q.gasEth,
+              recovery: p.executionRecovery,
+              costGatePassed: p.roundTripOk,
+            };
+          }
+        } catch (e) {
+          if (c) {
+            c.failures++;
+            c.lastSimulation = {
+              status: "unavailable",
+              at: new Date().toISOString(),
+              inputEth: input,
+              reason: (e.shortMessage ?? e.message).slice(0, 300),
+            };
+          }
+        }
+      }
       for (let i = 0; i < run.books.length; i++) {
         const book = run.books[i],
           points = [],
@@ -301,14 +368,20 @@ try {
                 point.entryExitQuote = await quoteHeldExit(client, pool, point.quantityRaw, snap);
                 point.security = admission;
                 const m = await resolveSpotMeta(client, pool, snap);
-                metadata.set(pool.id, { ...pool, funding0: m.funding0 });
+                metadata.set(pool.id, {
+                  ...pool,
+                  funding0: m.funding0,
+                  executionId: m.executionId,
+                  factory: m.stack?.factory,
+                });
                 points.push(point);
                 run.verifiedQuotes += 2;
                 if (c) {
                   c.probes++;
                   c.creationEvidence = point.creationEvidence.status;
                   c.creationTransaction = point.creationEvidence.transactionHash;
-                  c.migrationStatus = "unconfirmed";
+                  c.migrationStatus = point.migrationStatus ?? "unconfirmed";
+                  c.stage = point.stage;
                   c.lastReason = `Security approved; 2% allocation ${budget.toFixed(8)} ETH, exact sale verified; awaiting momentum/cost confirmation`;
                 }
               } catch (e) {
@@ -364,7 +437,12 @@ try {
                 fetchedAt: snapshot.at,
                 security: assessment,
               });
-              metadata.set(pool.id, { ...pool, funding0: depth.m.funding0 });
+              metadata.set(pool.id, {
+                ...pool,
+                funding0: depth.m.funding0,
+                executionId: depth.m.executionId,
+                factory: depth.m.stack?.factory,
+              });
             } catch (e) {
               record.errors.push(`Held depth ${pos.pool}: ${e.shortMessage ?? e.message}`);
             }

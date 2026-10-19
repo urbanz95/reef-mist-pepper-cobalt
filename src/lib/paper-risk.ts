@@ -17,6 +17,8 @@ export type SecurityAssessment = {
   actors: string[];
   source: string;
   burnedLpFraction?: number;
+  liquidityKind?: string;
+  protectedLiquidityFraction?: number;
 };
 export type ExitQuote = {
   pool: string;

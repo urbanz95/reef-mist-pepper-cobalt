@@ -12,6 +12,26 @@ export const LAUNCH_DISCOVERY_PATHS = [
   "/new_pools?page=1&include=base_token,quote_token",
   "/trending_pools?include=base_token,quote_token",
 ];
+export const PONS_DISCOVERY_PATHS = [
+  "/dexes/pons-v2-dex/pools?page=1&include=base_token,quote_token",
+  "/new_pools?page=1&include=base_token,quote_token",
+  "/dexes/pons-v2/pools?page=1&include=base_token,quote_token",
+  "/new_pools?page=2&include=base_token,quote_token",
+  "/new_pools?page=1&include=base_token,quote_token",
+  "/trending_pools?include=base_token,quote_token",
+];
+/** One curve and one graduated market, isolated from security admission. */
+export function selectPonsDiagnostics(pools, now) {
+  return ["pons-v2", "pons-v2-dex"].flatMap((dex) => {
+    const list = pools.filter(
+      (p) =>
+        p.dex === dex && !p.executionBlock && p.fetchedAt <= now && now - p.fetchedAt <= 600000,
+    );
+    if (!list.length) return [];
+    const offset = Math.floor(now / 30000) % list.length;
+    return [list[offset]];
+  });
+}
 export function selectLaunchPools(eligible, previous, now) {
   const byId = new Map(eligible.map((p) => [p.id, p]));
   const continuing = previous && now - previous.startedAt < 300000;

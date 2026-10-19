@@ -11,6 +11,16 @@ const events = parseAbi([
 const zero = "0x" + "00".repeat(20);
 export function riskFromLog(log, position, previousFunding) {
   let decoded;
+  if (position.factory && log.address.toLowerCase() === position.factory.toLowerCase())
+    return {
+      alert: {
+        pool: position.pool,
+        token: position.token,
+        reason: "Pons factory launch state changed; route recheck required",
+        block: String(BigInt(log.blockNumber)),
+        transactionHash: log.transactionHash,
+      },
+    };
   try {
     decoded = decodeEventLog({ abi: events, data: log.data, topics: log.topics });
   } catch {
@@ -27,7 +37,7 @@ export function riskFromLog(log, position, previousFunding) {
     if (eventName === "Burn") reason = "Liquidity withdrawal observed";
     if (
       eventName === "ModifyLiquidity" &&
-      args.id.toLowerCase() === position.pool &&
+      args.id.toLowerCase() === (position.watchPool ?? position.pool).toLowerCase() &&
       args.liquidityDelta < 0n
     )
       reason = "V4 liquidity withdrawal observed";
@@ -75,19 +85,33 @@ export function createRiskMonitor(client, now = Date.now, saved = {}) {
         while (cursor <= head && chunks++ < 8) {
           const end = cursor + 1999n < head ? cursor + 1999n : head;
           const poolFilter =
-            p.dex === "uniswap-v4-robinhood"
-              ? { address: CONTRACTS.v4PoolManager, topics: [null, p.pool] }
+            p.dex === "uniswap-v4-robinhood" ||
+            p.dex === "pons-v2-dex" ||
+            p.watchPool?.length === 66
+              ? { address: CONTRACTS.v4PoolManager, topics: [null, p.watchPool ?? p.pool] }
               : { address: p.pool };
           const filter = {
             fromBlock: "0x" + cursor.toString(16),
             toBlock: "0x" + end.toString(16),
           };
-          const [poolLogs, tokenLogs] = await Promise.all([
+          const [poolLogs, tokenLogs, factoryLogs] = await Promise.all([
             client.request({ method: "eth_getLogs", params: [{ ...filter, ...poolFilter }] }),
             client.request({ method: "eth_getLogs", params: [{ ...filter, address: p.token }] }),
+            p.factory
+              ? client.request({
+                  method: "eth_getLogs",
+                  params: [
+                    {
+                      ...filter,
+                      address: p.factory,
+                      topics: [null, "0x" + p.token.slice(2).padStart(64, "0")],
+                    },
+                  ],
+                })
+              : Promise.resolve([]),
           ]);
           if (!positions.some((current) => current.pool === p.pool)) break;
-          const logs = [...poolLogs, ...tokenLogs].sort(
+          const logs = [...poolLogs, ...tokenLogs, ...factoryLogs].sort(
             (a, b) =>
               Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) ||
               Number(BigInt(a.logIndex) - BigInt(b.logIndex)),
