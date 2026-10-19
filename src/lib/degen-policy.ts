@@ -53,6 +53,8 @@ export type Observation = {
   candidates: Candidate[];
   /** Explicit paper experiment override; live callers use the six-hour default. */
   paperHorizonHours?: 48;
+  /** Paper-only experiment. Live keeper callers never set this. */
+  paperIgnorePoolAge?: true;
 };
 export type Decision = {
   action: "wait" | "enter" | "hop" | "exit" | "blocked";
@@ -170,8 +172,7 @@ export function decide(previous: PolicyState, o: Observation): Decision {
       c.roundTripOk &&
       Number.isFinite(c.tvlUsd) &&
       c.tvlUsd >= POLICY.minTvlUsd &&
-      c.createdAt > 0 &&
-      o.now - c.createdAt >= POLICY.minPoolAgeMs &&
+      (o.paperIgnorePoolAge || (c.createdAt > 0 && o.now - c.createdAt >= POLICY.minPoolAgeMs)) &&
       Number.isFinite(c.costEth) &&
       c.costEth >= 0,
   );

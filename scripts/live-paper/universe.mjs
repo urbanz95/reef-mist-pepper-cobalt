@@ -6,6 +6,31 @@ export const DISCOVERY_PATHS = [
   "/trending_pools?include=base_token,quote_token",
   "/search/pools?query=PONS&network=robinhood&include=base_token,quote_token",
 ];
+export const LAUNCH_DISCOVERY_PATHS = [
+  "/new_pools?page=1&include=base_token,quote_token",
+  "/new_pools?page=2&include=base_token,quote_token",
+  "/new_pools?page=1&include=base_token,quote_token",
+  "/trending_pools?include=base_token,quote_token",
+];
+export function selectLaunchPools(eligible, previous, now) {
+  const byId = new Map(eligible.map((p) => [p.id, p]));
+  const continuing = previous && now - previous.startedAt < 300000;
+  const retained = continuing ? previous.ids.map((id) => byId.get(id)).filter(Boolean) : [];
+  const candidates = [...retained, ...eligible.filter((p) => !retained.includes(p))];
+  const counts = new Map(),
+    selected = [];
+  for (const p of candidates) {
+    const n = counts.get(p.other) ?? 0;
+    if (n >= 2) continue;
+    counts.set(p.other, n + 1);
+    selected.push(p);
+    if (selected.length === 6) break;
+  }
+  return {
+    selected,
+    window: { startedAt: continuing ? previous.startedAt : now, ids: selected.map((p) => p.id) },
+  };
+}
 export function selectProbePools(eligible, now = Date.now()) {
   const counts = new Map();
   const diverse = eligible.filter((p) => {

@@ -1,3 +1,7 @@
+# Current launch experiment
+
+See [Emerging-token experiment](emerging-paper-test.md) for the current no-age spot profile, V2/V3/V4 execution probes and exits. The following describes the earlier LP discovery experiment; its age restriction no longer applies to paper tests.
+
 # Dynamic memecoin research in the paper test
 
 The discovered universe no longer relies on a fixed MEME/CASHCAT research list.

@@ -241,7 +241,11 @@ export function PaperResults() {
                         <tr key={t.id} className="border-t border-white/10">
                           <td className="p-3">
                             <a
-                              href={`https://robinhoodchain.blockscout.com/address/${t.pool}`}
+                              href={
+                                /^0x[0-9a-f]{40}$/i.test(t.pool)
+                                  ? `https://robinhoodchain.blockscout.com/address/${t.pool}`
+                                  : `https://www.geckoterminal.com/robinhood/pools/${t.pool}`
+                              }
                               target="_blank"
                               rel="noreferrer"
                               className="text-accent underline"
@@ -366,6 +370,21 @@ export function PaperResults() {
                       <span>{p.label}</span>
                     )}
                     {p.dex && <p className="mt-1 text-muted">{p.dex}</p>}
+                    {p.migrationStatus && (
+                      <p className="mt-1 text-muted">
+                        Migration unconfirmed · {p.creationEvidence?.replaceAll("_", " ")}
+                      </p>
+                    )}
+                    {p.creationTransaction && (
+                      <a
+                        className="text-accent underline"
+                        href={`https://robinhoodchain.blockscout.com/tx/${p.creationTransaction}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Pool creation evidence
+                      </a>
+                    )}
                     <p className="mt-1">
                       {p.probes} successful probes · {p.failures} failed · $
                       {p.tvlUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })} TVL
@@ -377,8 +396,10 @@ export function PaperResults() {
             </details>
           )}
           <p className="mt-4 text-xs text-muted">
-            PnL includes modeled fees and charged costs, using an approximate LP valuation. It
-            excludes uncharged future exit costs and is not a guaranteed cash-out value. Unknown
+            {book.strategy === "launch"
+              ? "Launch uses an approximate spot valuation, charges execution costs and earns no LP fees. "
+              : "PnL includes modeled fees and charged costs, using an approximate LP valuation. "}
+            It excludes uncharged future exit costs and is not a guaranteed cash-out value. Unknown
             valuations stay unknown. All selected pools are paper-only experiments; these results do
             not establish profitability or token safety.
           </p>
