@@ -88,7 +88,7 @@ export async function resolveSpotMeta(client, pool, snapshot) {
       c.toLowerCase() === CONTRACTS.weth.toLowerCase() || (version === 4 && c === zeroAddress);
     if (!isFunding(key.currency0) && !isFunding(key.currency1))
       throw new Error("Unsupported funding currency");
-    const other = isFunding(key.currency0) ? key.currency1 : key.currency0;
+    const other = (isFunding(key.currency0) ? key.currency1 : key.currency0).toLowerCase();
     if (other.toLowerCase() !== pool.other) throw new Error("Provider token identity mismatch");
     const decimals = await read(other, "decimals");
     if (decimals > 36) throw new Error("Unsupported token decimals");
