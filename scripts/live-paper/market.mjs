@@ -16,6 +16,8 @@ import {
 } from "../../src/lib/degen-paper-probe-artifact.ts";
 import { POLICY } from "../../src/lib/degen-policy.ts";
 import { createPoolProvider, METADATA_MAX_AGE_MS } from "./provider.mjs";
+import { sampleSpotPool } from "./spot-market.mjs";
+import { LAUNCH_DISCOVERY_PATHS } from "./universe.mjs";
 const RPC = "https://rpc.mainnet.chain.robinhood.com";
 const GECKO = "https://api.geckoterminal.com/api/v2/networks/robinhood";
 const allowedMethods = new Set([
@@ -25,6 +27,7 @@ const allowedMethods = new Set([
   "eth_call",
   "eth_estimateGas",
   "eth_gasPrice",
+  "eth_getLogs",
 ]);
 export function readOnlyProvider(provider) {
   return {
@@ -47,7 +50,7 @@ const abi = parseAbi([
   "function balanceOf(address) view returns (uint256)",
 ]);
 const metadata = new Map();
-export function normalizePools(json) {
+export function normalizePools(json, launch = false) {
   const tokens = new Map(
     (json.included ?? []).filter((t) => t.type === "token").map((t) => [t.id, t.attributes]),
   );
@@ -61,33 +64,38 @@ export function normalizePools(json) {
         return null;
       if (!/^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(a.address ?? "")) return null;
       const dex = p.relationships?.dex?.data?.id;
-      const isWeth = [t0.address, t1.address].some(
-        (t) => t.toLowerCase() === CONTRACTS.weth.toLowerCase(),
-      );
-      const executionBlock =
-        dex !== "uniswap-v3-robinhood"
-          ? `Unsupported DEX: ${dex ?? "unknown"}; observation only`
-          : !isWeth
-            ? "Unsupported quote token; executor requires canonical WETH"
-            : !/^0x[0-9a-f]{40}$/i.test(a.address)
-              ? "Unsupported pool identifier"
-              : null;
+      const isFunding = (t) =>
+        t.toLowerCase() === CONTRACTS.weth.toLowerCase() ||
+        (launch &&
+          dex === "uniswap-v4-robinhood" &&
+          [zeroAddress, "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"].includes(t.toLowerCase()));
+      const isWeth = [t0.address, t1.address].some(isFunding);
+      const executionBlock = !(
+        launch
+          ? ["uniswap-v2-robinhood", "uniswap-v3-robinhood", "uniswap-v4-robinhood"]
+          : ["uniswap-v3-robinhood"]
+      ).includes(dex)
+        ? `Unsupported DEX: ${dex ?? "unknown"}; observation only`
+        : !isWeth
+          ? "Unsupported quote token; executor requires canonical WETH"
+          : !new RegExp(
+                dex === "uniswap-v4-robinhood" ? "^0x[0-9a-f]{64}$" : "^0x[0-9a-f]{40}$",
+                "i",
+              ).test(a.address)
+            ? "Unsupported pool identifier"
+            : null;
       const tvlUsd = Number(a.reserve_in_usd),
         volume24h = Number(a.volume_usd?.h24),
-        createdAt = Date.parse(a.pool_created_at ?? "");
+        parsedCreation = Date.parse(a.pool_created_at ?? ""),
+        createdAt = Number.isFinite(parsedCreation) ? parsedCreation : 0;
       if (![tvlUsd, volume24h, createdAt].every(Number.isFinite) || tvlUsd <= 0 || volume24h < 0)
         return null;
-      const other =
-        t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase() ? t1.address : t0.address;
+      const other = isFunding(t0.address) ? t1.address : t0.address;
       return {
         dex: dex ?? "unknown",
         executionBlock,
         wethUsd: isWeth
-          ? Number(
-              t0.address.toLowerCase() === CONTRACTS.weth.toLowerCase()
-                ? a.base_token_price_usd
-                : a.quote_token_price_usd,
-            )
+          ? Number(isFunding(t0.address) ? a.base_token_price_usd : a.quote_token_price_usd)
           : null,
         other: other.toLowerCase(),
         id: a.address.toLowerCase(),
@@ -121,16 +129,23 @@ async function feed(path) {
   const age = Number(res.headers.get("age") ?? 0);
   if (!Number.isFinite(age) || age < 0) throw new Error("Invalid provider cache age");
   return {
-    pools: normalizePools(await res.json()).map((p) => ({ ...p, fetchedAt: started - age * 1000 })),
+    pools: normalizePools(await res.json(), process.env.PAPER_STRATEGY === "launch").map((p) => ({
+      ...p,
+      fetchedAt: started - age * 1000,
+    })),
     fetchedAt: started - age * 1000,
     providerAgeSec: age,
   };
 }
-const provider = createPoolProvider(feed);
+const provider = createPoolProvider(
+  feed,
+  Date.now,
+  process.env.PAPER_STRATEGY === "launch" ? LAUNCH_DISCOVERY_PATHS : undefined,
+);
 export const seedProvider = (pools) => provider.seed(pools);
 export const discover = () => provider.discover();
 export function currentPool(id) {
-  if (!/^0x[0-9a-f]{40}$/i.test(id)) throw new Error("Invalid pool address");
+  if (!/^0x(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(id)) throw new Error("Invalid pool identifier");
   return provider.currentPool(id);
 }
 async function poolMeta(pool) {
@@ -169,8 +184,9 @@ export async function chainSnapshot() {
 }
 let quoteBlock = "",
   quoteCache = new Map();
-export async function samplePool(pool, capital, fetchedAt, snapshot, paperTokens) {
+export async function samplePool(pool, capital, fetchedAt, snapshot, paperTokens, launch = false) {
   if (pool.executionBlock) throw new Error(pool.executionBlock);
+  if (launch) return sampleSpotPool(client, pool, capital, fetchedAt, snapshot);
   const m = await poolMeta(pool);
   if (m.other.toLowerCase() !== pool.other) throw new Error("Provider token identity mismatch");
   if (quoteBlock !== snapshot.block) {

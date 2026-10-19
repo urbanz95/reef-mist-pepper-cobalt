@@ -8,6 +8,7 @@ import {
   type PolicyState,
 } from "./degen-policy.ts";
 import { recordPaperTrade, type PaperTrade } from "./paper-ledger.ts";
+import { stepLaunchBook } from "./launch-paper.ts";
 export type MarketPoint = Candidate & {
   priceEth: number;
   fetchedAt: number;
@@ -16,6 +17,7 @@ export type MarketPoint = Candidate & {
   label: string;
   reserveEth?: number;
   metadataFresh?: boolean;
+  executionRecovery?: number;
 };
 export type LiveBook = {
   initial: number;
@@ -27,12 +29,13 @@ export type LiveBook = {
     principal: number;
     fees: number;
     reserveEthAtEntry?: number;
+    recoveryAtEntry?: number;
   } | null;
   lastAt: number;
   fees: number;
   costs: number;
   value: number | null;
-  strategy?: "baseline" | "carry48";
+  strategy?: "baseline" | "carry48" | "launch";
   prices?: { id: string; at: number; price: number }[];
   enteredAt?: number;
   entryAccountValue?: number;
@@ -40,7 +43,7 @@ export type LiveBook = {
 };
 export function newLiveBook(
   initial: number,
-  strategy: "baseline" | "carry48" = "baseline",
+  strategy: "baseline" | "carry48" | "launch" = "baseline",
 ): LiveBook {
   if (!Number.isFinite(initial) || initial <= 0 || initial > 0.5)
     throw new Error("Virtual capital must be > 0 and <= 0.5 ETH");
@@ -65,6 +68,7 @@ export function fullRangeValue(principal: number, entryPrice: number, price: num
   return principal * Math.sqrt(price / entryPrice);
 }
 export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: number) {
+  if (previous.strategy === "launch") return stepLaunchBook(previous, points, now);
   const book: LiveBook = {
     ...previous,
     state: { ...previous.state },
@@ -129,6 +133,7 @@ export function stepLiveBook(previous: LiveBook, points: MarketPoint[], now: num
     sellable: value !== null,
     candidates: acceptable.map((p) => ({ ...p, costEth: p.costEth + (current?.exitCostEth ?? 0) })),
     paperHorizonHours: carry ? 48 : undefined,
+    paperIgnorePoolAge: true,
   });
   if (
     carry &&

@@ -27,7 +27,7 @@ export const paperReportSchema = z.object({
   books: z
     .array(
       z.object({
-        strategy: z.enum(["baseline", "carry48"]).optional(),
+        strategy: z.enum(["baseline", "carry48", "launch"]).optional(),
         initial: amount,
         value: amount.nullable(),
         fees: amount,
@@ -50,6 +50,9 @@ export const paperReportSchema = z.object({
         createdAt: z.number().optional(),
         firstSeenAt: z.string().optional(),
         lastSeenAt: z.string().optional(),
+        migrationStatus: z.literal("unconfirmed").optional(),
+        creationEvidence: z.string().optional(),
+        creationTransaction: z.string().optional(),
         tvlUsd: z.number(),
         observations: z.number(),
         probes: z.number(),

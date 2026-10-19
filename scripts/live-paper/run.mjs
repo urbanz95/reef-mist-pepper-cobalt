@@ -6,7 +6,7 @@ import { CONTRACTS } from "../../src/lib/chain.ts";
 import { discover, currentPool, chainSnapshot, samplePool, seedProvider } from "./market.mjs";
 
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
-import { selectProbePools } from "./universe.mjs";
+import { selectProbePools, selectLaunchPools } from "./universe.mjs";
 import { createPublisher } from "./publish.mjs";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
@@ -22,7 +22,8 @@ const duration = Number(process.env.PAPER_DURATION_MINUTES ?? 240);
 if (!Number.isFinite(duration) || duration < 0.25 || duration > 300)
   throw new Error("Duration must be 0.25–300 minutes");
 const strategy = process.env.PAPER_STRATEGY ?? "baseline";
-if (!["baseline", "carry48"].includes(strategy)) throw new Error("Unknown paper strategy");
+if (!["baseline", "carry48", "launch"].includes(strategy))
+  throw new Error("Unknown paper strategy");
 const capitals = (process.env.PAPER_CAPITALS ?? "0.00045,0.1").split(",").map(Number);
 if (capitals.length < 1 || capitals.length > 3 || new Set(capitals).size !== capitals.length)
   throw new Error("Use 1–3 virtual balances");
@@ -58,16 +59,29 @@ let run = {
   reasons: {},
   latest: null,
   assumptions: [
-    "Carry48 is an experimental 48-hour fee horizon with a recent-price drawdown filter, net profit exit and maximum hold. It does not predict or guarantee profit. Baseline uses six hours.",
+    ...(strategy === "launch"
+      ? [
+          "Launch is experimental spot paper trading on canonical Uniswap V2/V3/V4. It earns no LP fees and does not forecast profit. The pool age filter is disabled for paper experiments.",
+          "Launch observes at least two minutes of price history, requires a rise of max(0.5%, twice measured execution cost/capital), rejects a 1% drawdown, then confirms persistence for two minutes. These are observed signals, not forecasts.",
+          "Launch closes at a net profit target of max(1% capital, twice execution cost), a 3% account loss / 2% trailing stop, a 30% executable-depth drop, or 30 minutes. Missing or failed sell simulations produce unknown value, never an invented exit. Protective stops latch the account.",
+          "Spot value is a price-ratio approximation with round-trip trading loss reserved on entry and each gas leg charged once; execution impact can change. V4 depth uses active virtual liquidity, not the shared manager balance. Additional network data fees are excluded.",
+          "New-pool pages are polled with the shared 65-second minimum budget and backoff. Candidates are prioritized by recency and held in five-minute probe windows. This is provider-indexed discovery with minute-scale delay, not an exhaustive real-time launch feed.",
+          "Canonical pool creation events may be recorded from the last 5,000 blocks. Pool creation and verified identity do not prove launchpad migration. Migration remains unconfirmed without a verified origin emitter/event.",
+        ]
+      : [
+          "Carry48 is an experimental 48-hour fee horizon with a recent-price drawdown filter, net profit exit and maximum hold. It does not predict or guarantee profit. Baseline uses six hours.",
+          "Paper experiments have no minimum pool age; live keeper admission is separate.",
+          "LP value uses a full-range constant-product approximation in ETH, not an actual NFT position.",
+          "Fees are modeled from capped, discounted 24h volume APR, not measured earnings. No fees accrue across monitoring gaps.",
+          "LP probes and execution support canonical V3 WETH pairs only.",
+        ]),
     "Real chain prices, gas price and provider TVL/24h volume; no static catalogue or invented market prices.",
     "Paper token selection substitutes the manual-review gate ONLY in this experiment. Tokens have NOT been security-audited or approved for live trading.",
     "Overnight segments restore positions and balances. Monitoring gaps accrue no fees and cannot confirm entries. Profitable closes can re-enter after cooldown, up to four entries per rolling day; risk stops remain latched.",
     "Discovered-universe runs inspect multiple WETH pools, max two fee tiers per token and six pools per sample. Selection is experimental and is not token security approval.",
     "Same decide() policy as the keeper; production configuration is untouched. No wallet key or transaction broadcast is used.",
-    "LP value uses a full-range constant-product approximation in ETH, not an actual NFT position.",
-    "Fees are modeled from capped, discounted 24h volume APR, not measured earnings. No fees accrue across monitoring gaps.",
     "Gas budget measures entry and exit execution separately, adds 51,000 gas per leg plus 50% margin, and excludes vault deployment and any additional network data fee. Round-trip trading loss is reserved on entry; each gas leg is charged once. Estimates are not transaction receipts.",
-    "Discovery shares one request per 65 seconds with backoff across three V3 pages, network new/trending pools and a PONS search. This is a bounded, provider-indexed sample, not all launches or proof of migration. Unsupported DEX/quote tokens are observed but never executed. Four leaders and two rotating research slots cover eligible candidates without a fixed token list. Provider metadata expires for entry after ten minutes; held pools retain live exit monitoring. All age/liquidity/security/cost gates remain mandatory.",
+    "Unsupported protocols/quote tokens remain observation-only. Provider reference metadata expires for entries after ten minutes; held pools retain live exit monitoring. Liquidity, identity, execution and monitoring gates remain mandatory.",
     "The provider can lag despite a recent HTTP response. Missing/stale observations block entries; unknown valuations are null, never zero.",
     "A passing probe is state-specific and cannot guarantee future sellability. Results do not prove profitability or live safety.",
   ],
@@ -135,8 +149,10 @@ try {
         : null;
       const snapshot = await chainSnapshot();
       record.chain = { ...snapshot, gasPrice: String(snapshot.gasPrice) };
-      const ranked = (feed?.pools ?? []).sort(
-        (a, b) => b.volume24h / b.tvlUsd - a.volume24h / a.tvlUsd,
+      const ranked = (feed?.pools ?? []).sort((a, b) =>
+        strategy === "launch"
+          ? b.createdAt - a.createdAt || b.volume24h / b.tvlUsd - a.volume24h / a.tvlUsd
+          : b.volume24h / b.tvlUsd - a.volume24h / a.tvlUsd,
       );
       for (const p of ranked) {
         let coverage = run.poolCoverage.find((c) => c.id === p.id);
@@ -166,26 +182,27 @@ try {
             ? "Outside selected paper tokens"
             : p.tvlUsd < POLICY.minTvlUsd
               ? "Liquidity below minimum"
-              : start - p.createdAt < POLICY.minPoolAgeMs
-                ? "Pool younger than seven days"
-                : start - p.fetchedAt > METADATA_MAX_AGE_MS
-                  ? "Provider volume metadata expired for entries"
-                  : "Eligible; outside this sample's probe budget";
+              : start - p.fetchedAt > METADATA_MAX_AGE_MS
+                ? "Provider volume metadata expired for entries"
+                : "Eligible; outside this sample's probe budget";
       }
-      let selected = selectProbePools(
-        ranked.filter((p) => {
-          if (
-            p.executionBlock ||
-            (universe !== "discovered" && !tokens.includes(p.other)) ||
-            p.tvlUsd < POLICY.minTvlUsd ||
-            start - p.createdAt < POLICY.minPoolAgeMs ||
-            start - p.fetchedAt > METADATA_MAX_AGE_MS
-          )
-            return false;
-          return true;
-        }),
-        start,
-      ).map((p) => ({ ...p, fetchedAt: p.fetchedAt ?? feed.fetchedAt }));
+      const eligible = ranked.filter((p) => {
+        if (
+          p.executionBlock ||
+          (universe !== "discovered" && !tokens.includes(p.other)) ||
+          p.tvlUsd < POLICY.minTvlUsd ||
+          start - p.fetchedAt > METADATA_MAX_AGE_MS
+        )
+          return false;
+        return true;
+      });
+      const launchSelection =
+        strategy === "launch" ? selectLaunchPools(eligible, run.probeWindow, start) : null;
+      if (launchSelection) run.probeWindow = launchSelection.window;
+      let selected = (launchSelection?.selected ?? selectProbePools(eligible, start)).map((p) => ({
+        ...p,
+        fetchedAt: p.fetchedAt ?? feed.fetchedAt,
+      }));
       // A held pool disappearing from the discovery top page is queried directly.
       for (const id of new Set(run.books.map((b) => b.state.current).filter(Boolean))) {
         if (!selected.some((p) => p.id === id))
@@ -208,9 +225,15 @@ try {
               pool.fetchedAt,
               snapshot,
               universe === "discovered" ? [pool.other] : tokens,
+              strategy === "launch",
             );
             const coverage = run.poolCoverage.find((c) => c.id === pool.id);
             if (coverage) {
+              if (p.creationEvidence) {
+                coverage.migrationStatus = p.migrationStatus;
+                coverage.creationEvidence = p.creationEvidence.status;
+                coverage.creationTransaction = p.creationEvidence.transactionHash;
+              }
               coverage.probes++;
               coverage.lastReason = p.metadataFresh
                 ? "Live chain reserves and round-trip verified; metadata fresh enough for entries"
@@ -228,6 +251,13 @@ try {
           }
         }
         for (const p of points) {
+          if (strategy === "launch") {
+            p.launchCostFraction = p.costEth / (book.value ?? book.initial);
+            const coverage = run.poolCoverage.find((c) => c.id === p.id);
+            if (coverage)
+              coverage.lastReason = `${book.initial} ETH: spot round trip verified; execution cost ${p.costEth.toFixed(8)} ETH; observed rise must exceed ${(Math.max(0.005, 2 * p.launchCostFraction) * 100).toFixed(2)}%; migration unconfirmed`;
+            continue;
+          }
           const held = points.find((q) => q.id === book.state.current);
           const economics = candidateEconomics(
             { ...p, costEth: p.costEth + (held?.exitCostEth ?? 0) },
@@ -237,7 +267,7 @@ try {
           );
           p.economics = economics;
           const coverage = run.poolCoverage.find((c) => c.id === p.id);
-          if (coverage && p.metadataFresh)
+          if (coverage && p.metadataFresh && strategy !== "launch")
             coverage.lastReason = `${book.initial} ETH: expected incremental fees ${economics.expectedFeesEth.toFixed(8)} ETH; required ${economics.requiredFeesEth.toFixed(8)} ETH; ${economics.feasible ? "cost margin passed" : "cost margin failed"} (other gates still apply)`;
         }
         record.markets.push(...points.map((p) => ({ capital: book.initial, ...p })));
