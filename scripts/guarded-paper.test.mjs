@@ -251,6 +251,7 @@ it("explicit source, powers, zero taxes, holder coverage and on-chain LP proof a
   ])
     assert.equal(assess(r).status, "rejected");
   assert.equal(assess({ ...raw(), holders: undefined }).status, "unknown");
+  assert.equal(assess({ ...raw(), owner_address: undefined }).status, "unknown");
   assert.equal(assess(raw(), { status: "unknown", reason: "V4 rights unknown" }).status, "unknown");
   // Mimi passed a honeypot check but its LP was controlled by an unlocked contract.
   assert.equal(

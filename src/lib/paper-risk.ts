@@ -140,6 +140,7 @@ export function assessTokenSecurity(
   const creator = address(raw.creator_address),
     owner = address(raw.owner_address);
   if (!creator) unknown.push("Creator identity unknown");
+  if (!owner) unknown.push("Owner identity unknown");
   for (const a of [creator, owner]) if (a && !BURN_ADDRESSES.includes(a)) actors.push(a);
   const issuerShares = [raw.creator_percent, raw.owner_percent].map((x) =>
     typeof x === "string" && x.trim() !== "" ? Number(x) : NaN,
