@@ -56,7 +56,18 @@ contract SpotPaperWallet {
             }
         }
         bought=ISpotToken(token).balanceOf(address(this)); require(bought>0,"no tokens");
-        enterGas=start-gasleft(); start=gasleft();
+        enterGas=start-gasleft();
+        (recovered,exitGas)=sell(bought);
+    }
+    /// @notice Sell only: the caller must supply the held balance through eth_call state overrides.
+    /// No buy occurs before this sale, so a fresh buy cannot refill a drained pool.
+    function sellHeld(uint256 quantity) external returns(uint256 recovered,uint256 exitGas) {
+        require(msg.sender==owner,"owner");
+        require(quantity>0 && ISpotToken(token).balanceOf(address(this))==quantity,"held balance");
+        return sell(quantity);
+    }
+    function sell(uint256 bought) private returns(uint256 recovered,uint256 exitGas) {
+        uint256 start=gasleft();
         if (version==2) {
             require(ISpotToken(token).approve(executor,bought),"approve");
             address[] memory path=new address[](2); path[0]=token; path[1]=weth;
@@ -104,6 +115,17 @@ contract PerchSpotPaperProbe {
         (uint256 recovered,uint256 bought,uint256 enterGas,uint256 exitGas)=wallet.measure();
         (bool ok,)=msg.sender.call{value:address(this).balance}(""); require(ok,"refund");
         bytes memory result=abi.encode(recovered,bought,enterGas,exitGas);
+        assembly { return(add(result,32),mload(result)) }
+    }
+    receive() external payable {}
+}
+
+/// @notice Constructor result only. This contract is never deployed or funded on-chain.
+contract PerchSpotExitProbe {
+    constructor(address weth,address token,address executor,uint8 version,SpotPoolKey memory key,uint256 quantity) {
+        SpotPaperWallet wallet=new SpotPaperWallet(weth,token,executor,version,key);
+        (uint256 recovered,uint256 gasUsed)=wallet.sellHeld(quantity);
+        bytes memory result=abi.encode(recovered,gasUsed);
         assembly { return(add(result,32),mload(result)) }
     }
     receive() external payable {}

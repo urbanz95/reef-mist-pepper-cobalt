@@ -22,13 +22,55 @@ export const paperReportSchema = z.object({
   samples: z.number(),
   verifiedQuotes: z.number(),
   errors: z.number(),
+  securityChecks: z.number().optional(),
+  chainObservations: z.number().optional(),
+  securityProviderError: z.string().nullable().optional(),
+  monitor: z
+    .object({
+      healthy: z.boolean(),
+      lastSuccessfulAt: z.number(),
+      lastBlock: z.string().nullable(),
+      error: z.string().nullable(),
+      alerts: z.array(
+        z.object({
+          pool: z.string().optional(),
+          token: z.string().optional(),
+          reason: z.string(),
+          block: z.string(),
+          transactionHash: z.string().optional(),
+        }),
+      ),
+    })
+    .optional(),
   actions: z.record(z.string(), z.number()),
   reasons: z.record(z.string(), z.number()),
   books: z
     .array(
       z.object({
-        strategy: z.enum(["baseline", "carry48", "launch"]).optional(),
+        strategy: z.enum(["baseline", "carry48", "launch", "guarded"]).optional(),
         initial: amount,
+        cash: amount.optional(),
+        positions: z
+          .array(
+            z.object({
+              id: z.string(),
+              pool: z.string(),
+              token: z.string(),
+              label: z.string(),
+              quantityRaw: z.string(),
+              allocationEth: amount,
+              inputEth: amount,
+              entryGasEth: amount,
+              exitReserveEth: amount,
+              entryAt: amount,
+              entryBlock: z.string(),
+              markedValueEth: amount.nullable(),
+              exitRequested: z.string().optional(),
+              lastQuoteAt: amount.optional(),
+            }),
+          )
+          .max(2)
+          .optional(),
         value: amount.nullable(),
         fees: amount,
         costs: amount,
@@ -58,6 +100,10 @@ export const paperReportSchema = z.object({
         probes: z.number(),
         failures: z.number(),
         lastReason: z.string(),
+        securityStatus: z.enum(["approved", "rejected", "unknown"]).optional(),
+        securityReasons: z.array(z.string()).optional(),
+        securityCheckedAt: z.number().optional(),
+        burnedLpFraction: amount.optional(),
       }),
     )
     .optional(),

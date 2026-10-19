@@ -14,6 +14,7 @@ export const paperTradeSchema = z.object({
   pnlEth: z.number().nullable(),
   exitReason: z.string().nullable(),
   feeBaseline: z.number(),
+  quantityRaw: z.string().optional(),
 });
 export type PaperTrade = z.infer<typeof paperTradeSchema>;
 

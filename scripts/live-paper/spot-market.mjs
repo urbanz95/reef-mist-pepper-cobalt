@@ -7,9 +7,18 @@ import {
   formatEther,
   decodeAbiParameters,
   zeroAddress,
+  getContractAddress,
+  encodeFunctionData,
+  decodeFunctionResult,
+  toHex,
 } from "viem";
 import { CONTRACTS } from "../../src/lib/chain.ts";
-import { SPOT_PROBE_ABI, SPOT_PROBE_BYTECODE } from "../../src/lib/spot-paper-probe-artifact.ts";
+import {
+  SPOT_PROBE_ABI,
+  SPOT_PROBE_BYTECODE,
+  SPOT_EXIT_ABI,
+  SPOT_EXIT_BYTECODE,
+} from "../../src/lib/spot-paper-probe-artifact.ts";
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { poolCreationEvidence } from "./pool-evidence.mjs";
 const abi = parseAbi([
@@ -39,7 +48,7 @@ const keyType = {
 export function poolKeyHash(key) {
   return keccak256(encodeAbiParameters([keyType], [key]));
 }
-export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot) {
+export async function resolveSpotMeta(client, pool, snapshot) {
   const read = (address, functionName, args = []) =>
     client.readContract({
       address: address.toLowerCase(),
@@ -95,6 +104,24 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     m = { version, key, other, decimals, funding0: isFunding(key.currency0), evidence };
     keys.set(pool.id, m);
   }
+  if (
+    m.other.toLowerCase() !== pool.other.toLowerCase() ||
+    m.version !==
+      { "uniswap-v2-robinhood": 2, "uniswap-v3-robinhood": 3, "uniswap-v4-robinhood": 4 }[pool.dex]
+  )
+    throw new Error("Cached pool token/protocol identity mismatch");
+  return m;
+}
+export async function spotDepth(client, pool, snapshot) {
+  const m = await resolveSpotMeta(client, pool, snapshot);
+  const read = (address, functionName, args = []) =>
+    client.readContract({
+      address: address.toLowerCase(),
+      abi,
+      functionName,
+      args,
+      blockNumber: BigInt(snapshot.block),
+    });
   let priceEth, reserveEth;
   if (m.version === 2) {
     const [r0, r1] = await read(pool.id, "getReserves");
@@ -130,6 +157,118 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
   }
   if (![priceEth, reserveEth, pool.wethUsd].every((x) => Number.isFinite(x) && x > 0))
     throw new Error("Invalid spot price/depth/reference");
+  return { m, priceEth, reserveEth };
+}
+const executorFor = (m) =>
+  m.version === 2
+    ? CONTRACTS.v2Router
+    : m.version === 3
+      ? CONTRACTS.swapRouter02
+      : CONTRACTS.v4PoolManager;
+export const PROBE_ACCOUNT = "0x000000000000000000000000000000000000bEEF";
+export const EXIT_WRAPPER = getContractAddress({ from: PROBE_ACCOUNT, nonce: 0n });
+export const EXIT_WALLET = getContractAddress({ from: EXIT_WRAPPER, nonce: 1n });
+const balances = parseAbi(["function balanceOf(address) view returns(uint256)"]);
+const balanceSlots = new Map();
+const balanceKey = (slot) =>
+  keccak256(
+    encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [EXIT_WALLET, BigInt(slot)]),
+  );
+/** Locate a plain ERC20 mapping using read-only overrides. Custom accounting fails closed. */
+export async function heldBalanceOverride(client, token, quantity, block) {
+  const code = await client.getBytecode({ address: token, blockNumber: BigInt(block) });
+  if (!code || code === "0x") throw new Error("Token code unavailable for held balance proof");
+  const cacheKey = `${token.toLowerCase()}:${keccak256(code)}`;
+  let slot = balanceSlots.get(cacheKey);
+  const data = encodeFunctionData({
+    abi: balances,
+    functionName: "balanceOf",
+    args: [EXIT_WALLET],
+  });
+  const sentinel = 9876543210123456789n;
+  const matches = async (index) => {
+    try {
+      const result = await client.call({
+        to: token,
+        data,
+        blockNumber: BigInt(block),
+        stateOverride: [
+          {
+            address: token,
+            stateDiff: [{ slot: balanceKey(index), value: toHex(sentinel, { size: 32 }) }],
+          },
+        ],
+      });
+      return (
+        decodeFunctionResult({ abi: balances, functionName: "balanceOf", data: result.data }) ===
+        sentinel
+      );
+    } catch {
+      return false;
+    }
+  };
+  if (slot === undefined) {
+    for (let start = 0; start < 64 && slot === undefined; start += 8) {
+      const checks = await Promise.all(Array.from({ length: 8 }, (_, i) => matches(start + i)));
+      const match = checks.indexOf(true);
+      if (match >= 0) slot = start + match;
+    }
+    if (slot === undefined)
+      throw new Error("Exact held token balance cannot be proved with bounded storage overrides");
+    balanceSlots.set(cacheKey, slot);
+  }
+  // Verify the actual quantity too; never rely solely on a cached sentinel.
+  const override = {
+    address: token,
+    stateDiff: [{ slot: balanceKey(slot), value: toHex(BigInt(quantity), { size: 32 }) }],
+  };
+  const check = await client.call({
+    to: token,
+    data,
+    blockNumber: BigInt(block),
+    stateOverride: [override],
+  });
+  if (
+    decodeFunctionResult({ abi: balances, functionName: "balanceOf", data: check.data }) !==
+    BigInt(quantity)
+  )
+    throw new Error("Held balance override no longer matches");
+  return override;
+}
+export async function quoteHeldExit(client, pool, quantityRaw, snapshot) {
+  if (!/^\d+$/.test(quantityRaw) || BigInt(quantityRaw) <= 0n)
+    throw new Error("Invalid held quantity");
+  const m = await resolveSpotMeta(client, pool, snapshot);
+  const override = await heldBalanceOverride(client, m.other, quantityRaw, snapshot.block);
+  const data = encodeDeployData({
+    abi: SPOT_EXIT_ABI,
+    bytecode: SPOT_EXIT_BYTECODE,
+    args: [CONTRACTS.weth, m.other, executorFor(m), m.version, m.key, BigInt(quantityRaw)],
+  });
+  const result = await client.call({
+    account: PROBE_ACCOUNT,
+    data,
+    gas: 12000000n,
+    blockNumber: BigInt(snapshot.block),
+    stateOverride: [{ address: PROBE_ACCOUNT, balance: parseEther("100"), nonce: 0 }, override],
+  });
+  if (!result.data || result.data.length !== 130)
+    throw new Error("Exact-quantity exit returned no proceeds");
+  const [received, gas] = decodeAbiParameters(
+    [{ type: "uint256" }, { type: "uint256" }],
+    result.data,
+  );
+  return {
+    pool: pool.id,
+    quantityRaw,
+    receivedEth: Number(formatEther(received)),
+    gasEth: Number(formatEther(((gas + 51000n) * snapshot.gasPrice * 15n) / 10n)),
+    fetchedAt: snapshot.at,
+    block: snapshot.block,
+  };
+}
+export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot) {
+  const { m, priceEth, reserveEth } = await spotDepth(client, pool, snapshot);
   const executor =
     m.version === 2
       ? CONTRACTS.v2Router
@@ -142,13 +281,13 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     bytecode: SPOT_PROBE_BYTECODE,
     args: [CONTRACTS.weth, m.other, executor, m.version, m.key],
   });
-  const account = "0x000000000000000000000000000000000000bEEF";
+  const account = PROBE_ACCOUNT;
   const result = await client.call({
     account,
     data,
     value: amount,
     gas: 12000000n,
-    stateOverride: [{ address: account, balance: parseEther("100") }],
+    stateOverride: [{ address: account, nonce: 0, balance: parseEther("100") }],
     blockNumber: BigInt(snapshot.block),
   });
   if (!result.data || result.data.length !== 258) throw new Error("Spot probe returned no value");
@@ -185,6 +324,9 @@ export async function sampleSpotPool(client, pool, capital, fetchedAt, snapshot)
     probeRecoveredEth: formatEther(recovered),
     executionRecovery: Number(recovered) / Number(amount),
     probeBoughtRaw: String(bought),
+    quantityRaw: String(bought),
+    buyInputEth: Number(formatEther(amount)),
+    buyGasEth: entryGas,
     probeEnterGas: String(enterGas),
     probeExitGas: String(exitGas),
     block: snapshot.block,
