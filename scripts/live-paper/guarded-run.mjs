@@ -3,10 +3,18 @@ import { join, resolve } from "node:path";
 import { newLiveBook, stepLiveBook } from "../../src/lib/live-paper.ts";
 import { validateGuardedCheckpoint } from "../../src/lib/guarded-paper.ts";
 import { PAPER_RISK, PAPER_ROTATION } from "../../src/lib/paper-risk.ts";
+import { fillBudget } from "../../src/lib/paper-signals.ts";
 import { CONTRACTS } from "../../src/lib/chain.ts";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { client, discover, currentPool, chainSnapshot, seedProvider } from "./market.mjs";
-import { resolveSpotMeta, sampleSpotPool, quoteHeldExit, spotDepth } from "./spot-market.mjs";
+import {
+  resolveSpotMeta,
+  sampleSpotPool,
+  quoteHeldExit,
+  spotDepth,
+  isEntryRejection,
+} from "./spot-market.mjs";
+import { createAdmissionRetry } from "./admission.mjs";
 import { createSecurityProvider, assessPoolSecurity } from "./security.mjs";
 import { createRiskMonitor } from "./risk-monitor.mjs";
 import {
@@ -45,7 +53,8 @@ if (tokens.some((t) => !/^0x[0-9a-f]{40}$/.test(t)) || tokens.length > 4)
 const directory = resolve(process.env.PAPER_OUTPUT_DIR ?? "paper-results");
 await mkdir(directory, { recursive: true });
 const publish = createPublisher(),
-  security = createSecurityProvider();
+  security = createSecurityProvider(),
+  admissionRetry = createAdmissionRetry();
 let run = {
   version: 1,
   executionProfile: "pons-v2",
@@ -61,6 +70,11 @@ let run = {
   samples: 0,
   validFeeds: 0,
   verifiedQuotes: 0,
+  entryAttempts: 0,
+  executionQuotes: 0,
+  costQualifiedQuotes: 0,
+  entryRejections: 0,
+  priceObservations: 0,
   diagnosticProbes: 0,
   securityChecks: 0,
   chainObservations: 0,
@@ -76,6 +90,7 @@ let run = {
   poolCoverage: [],
   latest: null,
   heldPoolMetadata: [],
+  priceWatchMetadata: [],
   riskPolicy: PAPER_RISK,
   strategyPolicy: PAPER_ROTATION,
   assumptions: [
@@ -88,8 +103,9 @@ let run = {
     "Pons curves and graduated V4 pools have separate identity, stage and read-only execution probes. Up to one curve and one graduated pool are diagnostically tested every 30 seconds even when entry gates fail. Passing an execution probe does not authorize a trade. Partial curve fills and closed graduation phases are rejected, not booked as full purchases.",
     "Issuer/owner/shared top-three-holder addresses prevent correlated simultaneous entries. This is limited address correlation, not a complete related-wallet or funding-graph investigation. Burning LP alone does not eliminate token/market risk.",
     "The block monitor polls every second and scans every intervening block in bounded ranges. Liquidity burns/removals, reserve falls, mints and ownership changes request exit. Normal valuation targets five seconds; slow RPC can delay it. A rug within one transaction may complete before detection or exit.",
-    "Paper rotation uses a $20,000 liquidity floor AND a buy no larger than 0.25% of executable funding depth. Entry needs 60 seconds of continuous prices and 30 seconds of cost-covered trend confirmation, rise >=max(0.3%, 1.5 times measured costs/allocation), positive recent trend, no 1% drawdown or >15% spike. Costs over 2.5% block entry; Pons pools can charge about 2% before gas, so the threshold explicitly budgets these fees.",
-    "Per-position net profit target 1%, price loss trigger 3%, trailing trigger 2%, depth drop 30%, maximum hold 15 minutes; a stalled non-profitable trend can close after five minutes. A stronger confirmed candidate can replace a position held for at least two minutes only when its observed advantage exceeds switching costs plus 0.3%. Momentum is an observed signal, not forecast profit. Stops do not guarantee execution.",
+    "Paper rotation uses a $20,000 liquidity floor AND a buy no larger than 0.25% of executable funding depth. Entry needs 60 seconds of continuous prices and 30 seconds of cost-covered trend confirmation, rise >=max(0.3%, 1.5 times measured costs/allocation), positive recent trend, no 1% drawdown or >15% spike. All-in round-trip costs over 1% of allocation block entry. A successful execution quote alone does not prove an affordable or profitable route.",
+    "Canonical prices for up to eight pools with fresh liquidity-protection proof are observed independently of GoPlus approval and entry-probe success, after held-position handling. Their original block/time is retained; a recovered continuous suffix replaces evidence before a gap. Prices observed in this iteration are available to the next iteration; current full security and execution approval is still required to enter. Rejected new-entry probes use a per-pool/per-capital cooldown; held sales never use it.",
+    "Per-position net profit target 1%, allocation loss trigger 3%, trailing trigger 2% from the measured liquidation high-water, depth drop 30%, maximum hold 15 minutes; a stalled non-profitable trend can close after five minutes. Entry swap/gas friction establishes the initial liquidation baseline rather than an immediate trailing loss. A stronger confirmed candidate can replace a position held for at least two minutes only when its observed advantage exceeds switching costs plus 0.3%. Momentum is an observed signal, not forecast profit. Stops do not guarantee execution.",
     "Security deterioration or unavailable block monitoring requests exit and latches entries. Missing exact-sale quotes keep positions open and value unknown. Exit gas must fit its reserve. Ordinary price stops cool only that token for 30 minutes; a 1% total portfolio loss latches entries. Other positions remain monitored.",
     "Up to six entries per rolling hour and 24 per rolling day; ten-minute per-token cooldown after other closes. Segments restore quantities, cash, gas reserves and ledgers; monitoring gaps reset confirmation and request held exits. No real keeper parameters or contracts are changed.",
     "Discovery uses provider-indexed new/trending pages with shared rate limits and backoff. Pool creation evidence does not prove migration from a launchpad. Unverified migration remains unconfirmed.",
@@ -109,6 +125,15 @@ if (segment > 1) {
   seedProvider(run.heldPoolMetadata ?? []);
   for (const book of run.books) validateGuardedCheckpoint(book);
 }
+for (const key of [
+  "entryAttempts",
+  "executionQuotes",
+  "costQualifiedQuotes",
+  "entryRejections",
+  "priceObservations",
+])
+  run[key] ??= 0;
+run.priceWatchMetadata ??= [];
 const monitor = createRiskMonitor(client, Date.now, run.monitorCheckpoint);
 let stopped = false,
   feed = null,
@@ -122,7 +147,10 @@ process.on("SIGINT", () => {
 });
 const deadline = Date.now() + duration * 60000,
   initialObservations = run.chainObservations;
-const metadata = new Map(run.heldPoolMetadata.map((p) => [p.id, p]));
+const metadata = new Map(
+  [...run.priceWatchMetadata, ...run.heldPoolMetadata].map((p) => [p.id, p]),
+);
+let priceObservations = run.latest?.priceObservations ?? [];
 async function heldForMonitor() {
   return run.books
     .flatMap((b) => b.positions ?? [])
@@ -167,6 +195,74 @@ function addDecisions(record, result, book) {
       chargedEth: e.chargedEth ?? 0,
     });
 }
+async function observePrices(record, selected, assessments, assessmentSnapshot) {
+  const watched = [
+    ...new Map(
+      [
+        ...run.books.flatMap((b) => b.positions ?? []).map((p) => metadata.get(p.pool)),
+        ...run.priceWatchMetadata.map((p) => metadata.get(p.id) ?? p),
+        ...selected,
+      ]
+        .filter(Boolean)
+        .map((p) => [p.id, p]),
+    ).values(),
+  ].slice(0, 8);
+  // Price research runs after all held-position decisions. It cannot defer a
+  // sale and never turns an unsupported token/security result into admission.
+  for (let offset = 0; offset < watched.length; offset += 4)
+    await Promise.all(
+      watched.slice(offset, offset + 4).map(async (pool) => {
+        try {
+          let snap = assessmentSnapshot,
+            assessment = assessments.get(pool.id);
+          if (!assessment || Date.now() - snap.at > 60000) {
+            snap = await chainSnapshot();
+            assessment = await assessPoolSecurity(client, pool, snap, security);
+            run.securityChecks++;
+          }
+          if (
+            assessment.liquidityBlock !== snap.block ||
+            !(assessment.protectedLiquidityFraction >= 0.95)
+          ) {
+            record.priceObservationSkips.push({
+              pool: pool.id,
+              reason: "Fresh canonical liquidity-protection proof unavailable",
+            });
+            return;
+          }
+          const depth = await spotDepth(client, pool, snap);
+          if (!Number.isFinite(depth.priceEth) || depth.priceEth <= 0)
+            throw new Error("Canonical pool price is invalid");
+          record.priceObservations.push({
+            id: pool.id,
+            at: snap.at,
+            price: depth.priceEth,
+            block: snap.block,
+          });
+          metadata.set(pool.id, {
+            ...pool,
+            funding0: depth.m.funding0,
+            executionId: depth.m.executionId,
+            factory: depth.m.stack?.factory,
+          });
+        } catch (e) {
+          record.errors.push(`Price ${pool.id}: ${e.shortMessage ?? e.message}`);
+        }
+      }),
+    );
+  // Keep previously approved identities available when discovery rotates away.
+  // Retention is observation-only; fresh LP proof is repeated on every sample.
+  const previous = new Set(run.priceWatchMetadata.map((p) => p.id));
+  run.priceWatchMetadata = watched
+    .filter(
+      (p) =>
+        previous.has(p.id) ||
+        run.poolCoverage.some((c) => c.id === p.id && c.securityApprovedCount > 0),
+    )
+    .map((p) => metadata.get(p.id) ?? p);
+  run.priceObservations += record.priceObservations.length;
+  priceObservations = record.priceObservations;
+}
 await save();
 monitor.setPositions(await heldForMonitor());
 await monitor.poll();
@@ -180,8 +276,12 @@ try {
         chain: null,
         markets: [],
         exitQuotes: [],
+        priceObservations: [],
+        priceObservationsUsed: priceObservations,
+        priceObservationSkips: [],
         decisions: [],
         errors: [],
+        rejections: [],
       };
     try {
       // Once an alarm is pending, spend the iteration on held-position sales first.
@@ -276,7 +376,8 @@ try {
       let snapshot = await chainSnapshot();
       run.chainObservations++;
       record.chain = { ...snapshot, gasPrice: String(snapshot.gasPrice) };
-      const assessments = new Map();
+      const assessments = new Map(),
+        assessmentSnapshot = snapshot;
       await Promise.all(
         selected.map(async (p) => {
           const assessment = await assessPoolSecurity(client, p, snapshot, security);
@@ -390,7 +491,14 @@ try {
           );
           await Promise.all(
             candidates.map(async (pool) => {
-              const c = run.poolCoverage.find((c) => c.id === pool.id);
+              const c = run.poolCoverage.find((c) => c.id === pool.id),
+                retryKey = `${pool.id}:${book.initial}`,
+                cooling = admissionRetry.get(retryKey);
+              if (cooling) {
+                if (c)
+                  c.lastReason = `Entry probe deferred until ${new Date(cooling.nextRetryAt).toISOString()}: ${cooling.reason}`;
+                return;
+              }
               try {
                 const snap = await chainSnapshot();
                 const admission = await assessPoolSecurity(client, pool, snap, security);
@@ -402,6 +510,7 @@ try {
                   }
                   return;
                 }
+                run.entryAttempts++;
                 const point = await sampleSpotPool(
                   client,
                   pool,
@@ -411,6 +520,25 @@ try {
                 );
                 point.entryExitQuote = await quoteHeldExit(client, pool, point.quantityRaw, snap);
                 point.security = admission;
+                const fill = fillBudget(point, budget, Date.now());
+                if (fill && Date.now() - point.fetchedAt <= 10000) run.executionQuotes++;
+                if (
+                  fill &&
+                  fill.costFraction <= PAPER_ROTATION.maxEntryCostFraction &&
+                  Date.now() - point.fetchedAt <= 10000
+                ) {
+                  run.costQualifiedQuotes++;
+                  admissionRetry.clear(retryKey);
+                } else if (fill && fill.costFraction > PAPER_ROTATION.maxEntryCostFraction) {
+                  const reason = `Measured all-in round-trip costs ${(100 * fill.costFraction).toFixed(2)}% exceed the ${(100 * PAPER_ROTATION.maxEntryCostFraction).toFixed(2)}% allocation limit`;
+                  admissionRetry.reject(retryKey, reason);
+                  record.rejections.push({ pool: pool.id, capital: book.initial, reason });
+                } else if (!fill && Date.now() - point.entryExitQuote.fetchedAt <= 10000) {
+                  const reason =
+                    "Measured exact sale cannot fund the allocation, exit reserve or immediate loss gate";
+                  admissionRetry.reject(retryKey, reason);
+                  record.rejections.push({ pool: pool.id, capital: book.initial, reason });
+                }
                 const m = await resolveSpotMeta(client, pool, snap);
                 metadata.set(pool.id, {
                   ...pool,
@@ -429,11 +557,15 @@ try {
                   c.lastReason = `Security approved; 2% allocation ${budget.toFixed(8)} ETH, exact sale verified; awaiting momentum/cost confirmation`;
                 }
               } catch (e) {
+                const reason = e.shortMessage ?? e.message;
                 if (c) {
                   c.failures++;
-                  c.lastReason = `Entry unavailable: ${(e.shortMessage ?? e.message).slice(0, 220)}`;
+                  c.lastReason = `Entry unavailable: ${reason.slice(0, 220)}`;
                 }
-                record.errors.push(`Entry ${pool.id}: ${e.shortMessage ?? e.message}`);
+                if (isEntryRejection(e)) {
+                  admissionRetry.reject(retryKey, reason);
+                  record.rejections.push({ pool: pool.id, capital: book.initial, reason });
+                } else record.errors.push(`Entry ${pool.id}: ${reason}`);
               }
             }),
           );
@@ -497,6 +629,7 @@ try {
         record.exitQuotes.push(...exitQuotes.map((q) => ({ capital: book.initial, ...q })));
         const result = stepLiveBook(book, points, Date.now(), {
           exitQuotes,
+          priceObservations: record.priceObservationsUsed,
           alerts: [...risk.alerts, ...localAlerts],
           monitorHealthy: risk.healthy,
         });
@@ -510,6 +643,7 @@ try {
         addDecisions(record, result, book);
       }
       monitor.setPositions(await heldForMonitor());
+      await observePrices(record, selection.selected, assessments, assessmentSnapshot);
       run.entrySignals = record.entrySignals ?? [];
       record.monitor = monitor.snapshot;
       run.monitor = record.monitor;
@@ -528,6 +662,7 @@ try {
     }
     run.samples++;
     run.errors += record.errors.length;
+    run.entryRejections += record.rejections.length;
     run.latest = record;
     const decisions = record.decisions.map((d) => ({ ...d, at: record.at }));
     run.decisions = [...run.decisions, ...decisions].slice(-100);
@@ -545,6 +680,11 @@ try {
         decisions: record.decisions,
         securityChecks: run.securityChecks,
         quotes: run.verifiedQuotes,
+        priceObservations: record.priceObservations.length,
+        entryAttempts: run.entryAttempts,
+        executionQuotes: run.executionQuotes,
+        costQualifiedQuotes: run.costQualifiedQuotes,
+        rejections: record.rejections,
         errors: record.errors,
       }),
     );

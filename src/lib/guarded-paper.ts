@@ -129,7 +129,26 @@ export function stepGuardedBook(
   const history = monitoring
     ? (previous.prices ?? []).filter((h) => h.at <= now && now - h.at <= R.historyMs)
     : [];
-  b.prices = [...history, ...fresh.map((p) => ({ id: p.id, at: now, price: p.priceEth }))];
+  // Keep price research continuous when security or execution admission is
+  // deferred. It cannot supply a fill or bypass the fresh entry gates below.
+  const observed = (context.priceObservations ?? []).filter(
+    (p) =>
+      p.id.length > 0 &&
+      Number.isFinite(p.at) &&
+      p.at <= now &&
+      now - p.at <= POLICY.maxDataAgeMs &&
+      Number.isFinite(p.price) &&
+      p.price > 0 &&
+      /^\d+$/.test(p.block),
+  );
+  const merged = [
+    ...history,
+    ...observed,
+    ...fresh.map((p) => ({ id: p.id, at: p.fetchedAt, price: p.priceEth, block: p.block })),
+  ].sort((a, c) => a.at - c.at);
+  b.prices = [...new Map(merged.map((p) => [JSON.stringify([p.id, p.at]), p])).values()].sort(
+    (a, c) => a.at - c.at,
+  );
   const settle = (p: GuardedPosition, net: number, gas: number, reason: string, loss = false) => {
     const trade = b.ledger!.find((t) => t.id === p.id)!;
     b.cash += net;
@@ -357,7 +376,9 @@ export function stepGuardedBook(
         entryAt: now,
         entryBlock: p.entryExitQuote!.block,
         entryDepthEth: p.reserveEth!,
-        highWaterEth: budget,
+        // The trailing baseline starts at executable liquidation value. Using
+        // the allocation would mistake the purchase costs for a market fall.
+        highWaterEth: fill.net,
         markedValueEth: fill.net,
         actors: [...p.security!.actors],
         lastQuoteAt: p.entryExitQuote!.fetchedAt,

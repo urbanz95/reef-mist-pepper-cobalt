@@ -55,7 +55,7 @@ export type LiveBook = {
   challenges?: Record<string, { since: number; lastAt: number; observations: number }>;
   tokenCooldowns?: Record<string, number>;
   lossCooldowns?: Record<string, number>;
-  prices?: { id: string; at: number; price: number }[];
+  prices?: { id: string; at: number; price: number; block?: string }[];
   enteredAt?: number;
   entryAccountValue?: number;
   ledger?: PaperTrade[];

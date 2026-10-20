@@ -16,8 +16,20 @@ export const paperReportSchema = z.object({
   version: z.literal(1),
   executionProfile: z.literal("pons-v2").optional(),
   securityProfile: z.literal("single-token-v1").optional(),
-  strategyProfile: z.literal("rotation-v1").optional(),
+  strategyProfile: z.enum(["rotation-v1", "rotation-v2"]).optional(),
   strategyPolicy: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
+  verdict: z
+    .object({
+      status: z.enum([
+        "no_cost_qualified_routes",
+        "no_completed_trades",
+        "negative_pnl",
+        "insufficient_evidence",
+      ]),
+      closedTrades: z.number().int().nonnegative(),
+      message: z.string(),
+    })
+    .optional(),
   entrySignals: z
     .array(
       z.object({
@@ -40,6 +52,11 @@ export const paperReportSchema = z.object({
   samples: z.number(),
   verifiedQuotes: z.number(),
   errors: z.number(),
+  entryAttempts: z.number().nonnegative().optional(),
+  executionQuotes: z.number().nonnegative().optional(),
+  entryRejections: z.number().nonnegative().optional(),
+  priceObservations: z.number().nonnegative().optional(),
+  costQualifiedQuotes: z.number().nonnegative().optional(),
   securityChecks: z.number().optional(),
   diagnosticProbes: z.number().optional(),
   chainObservations: z.number().optional(),
@@ -186,6 +203,7 @@ export const paperReportSchema = z.object({
             checkedAt: z.number(),
             requestedAt: z.number().optional(),
             detail: z.string().optional(),
+            providerCode: z.union([z.number(), z.string()]).optional(),
           })
           .optional(),
         burnedLpFraction: amount.optional(),

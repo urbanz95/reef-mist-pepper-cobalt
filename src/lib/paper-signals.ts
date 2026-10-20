@@ -15,9 +15,18 @@ export function observedMomentum(
   id: string,
   now: number,
 ) {
-  const h = history.filter((x) => x.id === id && x.at <= now && now - x.at <= R.historyMs);
+  const ordered = history
+    .filter((x) => x.id === id && x.at <= now && now - x.at <= R.historyMs)
+    .sort((a, b) => a.at - b.at);
+  // A gap invalidates the evidence before it, not the subsequent healthy
+  // observations. Requiring the entire retained window to be gap-free can
+  // keep a recovered feed warming for two minutes after it already collected
+  // the required minute of new prices.
+  let since = 0;
+  for (let i = 1; i < ordered.length; i++)
+    if (ordered[i].at - ordered[i - 1].at > 30_000) since = i;
+  const h = ordered.slice(since);
   if (h.length < 4 || now - h[0].at < R.lookbackMs || now - h.at(-1)!.at > 10_000) return null;
-  if (h.some((x, i) => i > 0 && x.at - h[i - 1].at > 30_000)) return null;
   const last = h.at(-1)!,
     recent = h.find((x) => x.at >= now - R.confirmMs) ?? h[0];
   return {
@@ -83,13 +92,19 @@ export function entrySignal(
   const fill = fillBudget(p, budget, now);
   if (!fill) return blocked("Exact sale, gas reserve or immediate position loss gate failed");
   if (fill.costFraction > R.maxEntryCostFraction)
-    return blocked("Measured round-trip costs exceed 2.5% of the position allocation");
+    return {
+      ...blocked(
+        `Measured round-trip costs exceed ${(R.maxEntryCostFraction * 100).toFixed(1)}% of the position allocation`,
+      ),
+      costFraction: fill.costFraction,
+      requiredRise: Math.max(R.minRise, R.costMargin * fill.costFraction),
+    };
   const momentum = observedMomentum(history, p.id, now);
   if (!momentum)
     return {
       pool: p.id,
       status: "warming",
-      reason: "Collecting 60 seconds of continuous executable prices",
+      reason: "Collecting 60 seconds of continuous canonical prices",
     };
   const requiredRise = Math.max(R.minRise, R.costMargin * fill.costFraction);
   const signal = {

@@ -11,6 +11,8 @@ import {
   encodeFunctionData,
   decodeFunctionResult,
   toHex,
+  ContractFunctionRevertedError,
+  ExecutionRevertedError,
 } from "viem";
 import { CONTRACTS } from "../../src/lib/chain.ts";
 import {
@@ -39,6 +41,23 @@ import { poolKeyHash } from "./pool-key.mjs";
 export { poolKeyHash } from "./pool-key.mjs";
 import { isPons, paperVersion } from "../../src/lib/paper-venues.ts";
 import { resolvePonsMeta } from "./pons-market.mjs";
+
+/** Candidate probes can reject a route without implying an RPC/data outage. */
+export function isEntryRejection(error) {
+  const seen = new Set();
+  for (let current = error; current && typeof current === "object"; current = current.cause) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (
+      current.code === "PAPER_ENTRY_REJECTED" ||
+      current instanceof ContractFunctionRevertedError ||
+      current instanceof ExecutionRevertedError
+    )
+      return true;
+  }
+  return false;
+}
+
 export async function resolveSpotMeta(client, pool, snapshot) {
   if (isPons(pool.dex)) return resolvePonsMeta(client, pool, snapshot);
   const read = (address, functionName, args = []) =>
@@ -306,8 +325,11 @@ export async function sampleSpotPool(
     result.data,
   );
   const roundTripOk = bought > 0n && recovered >= (amount * 97n) / 100n;
-  if (bought === 0n || recovered === 0n || (!diagnosticOnly && !roundTripOk))
-    throw new Error("Spot round trip lost over 3% or returned no tokens");
+  if (bought === 0n || recovered === 0n || (!diagnosticOnly && !roundTripOk)) {
+    const error = new Error("Spot round trip lost over 3% or returned no tokens");
+    error.code = "PAPER_ENTRY_REJECTED";
+    throw error;
+  }
   const entryGas = Number(formatEther(((enterGas + 51000n) * snapshot.gasPrice * 15n) / 10n));
   const exitCostEth = Number(formatEther(((exitGas + 51000n) * snapshot.gasPrice * 15n) / 10n));
   const loss = Number(formatEther(amount > recovered ? amount - recovered : 0n));
