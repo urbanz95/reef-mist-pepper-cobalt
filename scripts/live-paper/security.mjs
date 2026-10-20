@@ -2,6 +2,7 @@ import { parseAbi } from "viem";
 import { BURN_ADDRESSES, assessTokenSecurity } from "../../src/lib/paper-risk.ts";
 import { isPons } from "../../src/lib/paper-venues.ts";
 import { ponsLiquidityProtection } from "./pons-market.mjs";
+import { ponsTokenProof, applyPonsTokenProof } from "./pons-token.mjs";
 const abi = parseAbi([
   "function totalSupply() view returns(uint256)",
   "function balanceOf(address) view returns(uint256)",
@@ -57,17 +58,37 @@ export async function assessPoolSecurity(client, pool, snapshot, provider, now =
       reason: `Pons identity/liquidity proof unavailable: ${(e.shortMessage ?? e.message).slice(0, 220)}`,
     };
   }
-  const assessment = assessTokenSecurity(row?.raw, pool, row?.checkedAt ?? 0, now, {
-    ...lp,
-    fraction: isPons(pool.dex) ? undefined : lp.fraction,
-    // The reviewed Pons locker has no outgoing token/NFT transfer path. Its
-    // permanently held tokens cannot be sold by a whale; provider lock tags
-    // alone never establish this exclusion.
-    permanentHolders:
-      isPons(pool.dex) && lp.status === "approved" && lp.evidence?.locker
-        ? [lp.evidence.locker.toLowerCase()]
-        : [],
-  });
+  let tokenEvidence = null;
+  if (isPons(pool.dex) && lp.status === "approved" && row?.raw) {
+    try {
+      tokenEvidence = await ponsTokenProof(client, pool, snapshot);
+    } catch {
+      /* Unknown proof never grants an exception. */
+    }
+  }
+  const assessment = assessTokenSecurity(
+    applyPonsTokenProof(row?.raw, tokenEvidence, pool.other, snapshot.block),
+    pool,
+    row?.checkedAt ?? 0,
+    now,
+    {
+      ...lp,
+      fraction: isPons(pool.dex) ? undefined : lp.fraction,
+      // The reviewed Pons locker has no outgoing token/NFT transfer path. Its
+      // permanently held tokens cannot be sold by a whale; provider lock tags
+      // alone never establish this exclusion.
+      permanentHolders:
+        isPons(pool.dex) && lp.status === "approved" && lp.evidence?.locker
+          ? [lp.evidence.locker.toLowerCase()]
+          : [],
+    },
+  );
+  if (tokenEvidence?.issuerOverLimit) {
+    assessment.status = "rejected";
+    if (!assessment.reasons.includes("Issuer holdings exceed 1%"))
+      assessment.reasons.push("Issuer holdings exceed 1%");
+  }
+  if (tokenEvidence) assessment.source = "GoPlus + pinned Pons token runtime + on-chain issuer/LP";
   if (providerData && providerData.status !== "available") {
     const reasons = {
       not_requested: "Token security not requested; outside the active screening budget",
@@ -87,5 +108,6 @@ export async function assessPoolSecurity(client, pool, snapshot, provider, now =
     liquidityKind: isPons(pool.dex) ? "pons-permanent-seed" : "burned-lp",
     protectedLiquidityFraction: lp.fraction,
     liquidityEvidence: lp.evidence,
+    tokenEvidence,
   };
 }

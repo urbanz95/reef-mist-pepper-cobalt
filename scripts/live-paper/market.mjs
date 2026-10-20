@@ -101,6 +101,7 @@ export function normalizePools(json, launch = false) {
         label: a.name ?? a.address,
         tvlUsd,
         volume24h,
+        ...(Number.isFinite(Number(a.volume_usd?.m5)) ? { volume5m: Number(a.volume_usd.m5) } : {}),
         createdAt,
       };
     })

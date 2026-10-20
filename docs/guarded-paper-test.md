@@ -34,13 +34,19 @@ are not modeled. Missing/stale/failed sales mean **unknown**, never a zero mark 
 invented closed trade. A gas quote above the reserved ETH cannot silently spend
 unallocated portfolio cash; the position remains open and needs review.
 
-Entry requires two minutes of observed prices, rise at least max(0.5%, twice
-measured costs/allocation), no 1% drawdown, then two minutes of signal confirmation.
+The current `rotation-v1` profile requires 60 seconds of continuous observed prices,
+rise at least max(0.3%, 1.5 times measured costs/allocation), positive recent trend,
+no 1% drawdown or >15% spike, then 30 seconds of signal confirmation. The paper
+liquidity floor is $20,000 and buys cannot exceed 0.25% of executable funding depth.
+Measured two-leg costs above 2.5% block entries. See [the rotation review](paper-rotation.md).
 There is **no minimum pool age** in paper trading. Stops apply independently:
 1% net position profit target, 3% loss trigger, 2% trailing trigger, 30% depth drop,
-or 30-minute maximum hold. Security/risk exits latch further entries while other
-open positions remain monitored. At most four entries per rolling day and a
-30-minute per-token cooldown. These are execution requests, not guaranteed loss
+or 15-minute maximum hold. Stalled non-profitable momentum can close after five
+minutes. A stronger confirmed candidate can replace an open position after at least
+two minutes when its advantage exceeds switching costs plus a margin. Structural
+security/monitoring exits and a 1% portfolio loss latch entries; an ordinary price
+stop cools only its token for 30 minutes. Other closes have a ten-minute token
+cooldown. At most six entries per hour and 24 per day; other positions remain monitored. These are execution requests, not guaranteed loss
 limits or a claim that the strategy is profitable.
 
 ## Security admission and current coverage
@@ -51,7 +57,11 @@ mutable-tax/transfer-pause/blacklist/whitelist/honeypot/buy/sell restrictions, z
 buy/sell/transfer tax, creator+owner holdings <=1%, holder distribution with at
 least 20 holders and ten reported top holders, each non-pool holder <=5% and the
 observed top holders <=20%. Missing fields, unavailable results and data older
-than 60 seconds block entry. Provider cache age is preserved. The free API uses individually paced single-token requests with fair refresh and held-token priority; failures and retry-after do not refresh old timestamps.
+than 60 seconds block entry, except missing owner identity/full-balance-transfer
+flags can be resolved by the exact reviewed Pons runtime bound to verified factory
+registration. Its immutable deployer and current on-chain holdings replace the
+provider deployment-helper identity. Explicit positive risks are not overwritten;
+concentration and LP checks remain mandatory. Provider cache age is preserved. The free API uses individually paced single-token requests with fair refresh and held-token priority; failures and retry-after do not refresh old timestamps.
 This is external screening, not a source-code audit or a security guarantee.
 
 Liquidity protection supports the [verified Pons permanent-seed adapter](pons-paper-execution.md) and **canonical V2 pools with >=95% of LP
