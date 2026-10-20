@@ -68,9 +68,21 @@ export function selectGuardedPools(eligible, previous, coverage, now) {
     const kept = previous.ids.map((id) => byPool.get(id)).filter(Boolean);
     // A newly proved diagnostic must gain an entry slot immediately. Keeping
     // six unresolved tokens until window expiry starves genuine price history.
-    const selected = [
-      ...new Map([...all.filter(previouslyProved), ...kept, ...all].map((p) => [p.id, p])).values(),
-    ].slice(0, 6);
+    const leaders = [
+      ...new Map(
+        [...all.filter(previouslyProved), ...kept.slice(0, 4), ...all].map((p) => [p.id, p]),
+      ).values(),
+    ].slice(0, 4);
+    const leaderIds = new Set(leaders.map((p) => p.id));
+    // Keep two research slots stable even after six or more pools have passed.
+    // Otherwise old approvals immediately evict each new pool before its paced
+    // security request and price history can finish.
+    const research = [
+      ...new Map(
+        [...kept.slice(4), ...all].filter((p) => !leaderIds.has(p.id)).map((p) => [p.id, p]),
+      ).values(),
+    ].slice(0, 2);
+    const selected = [...leaders, ...research];
     return { selected, window: { ...previous, ids: selected.map((p) => p.id) } };
   }
   const leaders = all.slice(0, 4),

@@ -242,6 +242,28 @@ it("a diagnostically approved pool gains continuous observation instead of being
   assert.equal(next.selected[0].id, "6");
   assert.equal(selectGuardedPools(pools, next.window, proved, t0 + 95000).selected[0].id, "6");
 });
+it("six old approvals cannot evict the two research candidates before they finish their observation window", () => {
+  const pools = Array.from({ length: 8 }, (_, i) => ({
+    id: String(i),
+    other: addr(i),
+    dex: "pons-v2-dex",
+    tvlUsd: 25000,
+    volume24h: 10000 - i * 100,
+  }));
+  const coverage = pools
+    .slice(0, 6)
+    .map((p) => ({
+      id: p.id,
+      securityStatus: "approved",
+      securityCheckedAt: t0,
+      securityApprovedCount: 1,
+    }));
+  const previous = { startedAt: t0, ids: ["0", "1", "2", "3", "6", "7"], cursor: 2 };
+  assert.deepEqual(
+    selectGuardedPools(pools, previous, coverage, t0 + 60000).selected.map((p) => p.id),
+    previous.ids,
+  );
+});
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/pons-ownerless-runtime.json", import.meta.url)),
 );
