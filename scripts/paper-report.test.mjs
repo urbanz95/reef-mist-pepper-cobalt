@@ -2,7 +2,7 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { paperReportSchema, paperReportStale, newerPaperReport } from "../src/lib/paper-report.ts";
 import { createPublisher } from "./live-paper/publish.mjs";
-import { reportFiles } from "./live-paper/report.mjs";
+import { completeReport, reportFiles } from "./live-paper/report.mjs";
 const report = {
   version: 1,
   runId: "123",
@@ -68,6 +68,7 @@ it("Pons diagnostics survive public serialization and exports without turning re
           checkedAt: 0,
           requestedAt: 1000,
           detail: "Provider omitted this token",
+          providerCode: 2021,
           raw: "must be stripped",
         },
         liquidityKind: "pons-permanent-seed",
@@ -89,6 +90,7 @@ it("Pons diagnostics survive public serialization and exports without turning re
   assert.equal(parsed.poolCoverage[0].securityStatus, "unknown");
   assert.equal(parsed.poolCoverage[0].lastSimulation.costGatePassed, false);
   assert.equal(parsed.poolCoverage[0].securityData.status, "missing");
+  assert.equal(parsed.poolCoverage[0].securityData.providerCode, 2021);
   assert.equal("raw" in parsed.poolCoverage[0].securityData, false);
   assert.equal(parsed.trades.length, 0);
   const files = reportFiles({
@@ -104,6 +106,8 @@ it("Pons diagnostics survive public serialization and exports without turning re
   assert.match(files["pools.csv"], /simulationCostGatePassed/);
   assert.match(files["pools.csv"], /securityDataStatus/);
   assert.match(files["pools.csv"], /Provider omitted this token/);
+  assert.match(files["pools.csv"], /securityProviderCode/);
+  assert.match(files["pools.csv"], /2021/);
   assert.match(files["report.html"], /1 without a provider record/);
 });
 it("report preserves unknown PnL, strips private/unrelated fields and detects stalled running updates", () => {
@@ -153,6 +157,98 @@ it("rotation policy and balance-specific cost/signal evidence survive public JSO
   assert.match(files["signals.csv"], /Collecting history/);
   assert.match(files["report.html"], /rotation-v1/);
   assert.match(files["report.html"], /3.50%/);
+});
+const guardedRun = (extra = {}, book = {}) => ({
+  ...report,
+  strategyProfile: "rotation-v2",
+  poolCoverage: [],
+  assumptions: [],
+  entryAttempts: 6,
+  executionQuotes: 2,
+  entryRejections: 4,
+  priceObservations: 12,
+  costQualifiedQuotes: 0,
+  books: [
+    {
+      ...report.books[0],
+      strategy: "guarded",
+      value: 0.1,
+      ledger: [],
+      ...book,
+    },
+  ],
+  ...extra,
+});
+const position = (extra = {}) => ({
+  id: "position1",
+  capital: 0.1,
+  pool: "pool1",
+  label: "POOL / ETH",
+  entryAt: report.startedAt,
+  exitAt: report.updatedAt,
+  entryValueEth: 0.002,
+  valueEth: 0.00199,
+  durationSec: 60,
+  feesEth: 0,
+  costsEth: 0.00001,
+  pnlEth: -0.00001,
+  exitReason: "Timed exit",
+  feeBaseline: 0,
+  ...extra,
+});
+it("v2 publishes economic rejection counters and an honest zero-trade verdict", () => {
+  const completed = completeReport(guardedRun());
+  const parsed = paperReportSchema.parse(completed);
+  assert.equal(parsed.verdict.status, "no_cost_qualified_routes");
+  assert.equal(parsed.verdict.closedTrades, 0);
+  assert.equal(parsed.entryRejections, 4);
+  assert.equal(parsed.entryAttempts, 6);
+  assert.equal(parsed.executionQuotes, 2);
+  assert.equal(parsed.priceObservations, 12);
+  assert.equal(parsed.costQualifiedQuotes, 0);
+  assert.equal(parsed.trades.length, 0);
+  assert.match(parsed.verdict.message, /profitability has not been validated/);
+  const files = reportFiles(completed);
+  assert.match(files["report.html"], /No observed entry quote met the cost budget/);
+  assert.match(files["report.md"], /4 expected entry rejections \(not data errors\)/);
+  assert.match(files["report.md"], /12 independent price observations/);
+});
+it("missing cost evidence or an open position cannot become a no-route or profitability conclusion", () => {
+  const missing = completeReport(guardedRun({ costQualifiedQuotes: undefined }));
+  assert.equal(missing.verdict.status, "no_completed_trades");
+  for (const executionQuotes of [undefined, 0]) {
+    const unmeasured = completeReport(guardedRun({ executionQuotes }));
+    assert.equal(unmeasured.verdict.status, "no_completed_trades");
+  }
+  const open = completeReport(
+    guardedRun({}, { ledger: [position({ exitAt: null })], value: 0.10001 }),
+  );
+  assert.equal(open.verdict.status, "no_completed_trades");
+  assert.equal(open.verdict.closedTrades, 0);
+  assert.match(open.verdict.message, /do not validate trading profitability/);
+  const empty = completeReport(guardedRun({ samples: 0 }));
+  assert.equal(empty.verdict.status, "no_completed_trades");
+});
+it("completed losses are identified and gains or unknown equity remain insufficient evidence", () => {
+  const negative = completeReport(guardedRun({}, { ledger: [position()], value: 0.09999 }));
+  assert.equal(negative.verdict.status, "negative_pnl");
+  assert.equal(negative.verdict.closedTrades, 1);
+  assert.match(negative.verdict.message, /below holding ETH/);
+  const positive = completeReport(
+    guardedRun({}, { ledger: [position({ pnlEth: 0.00001 })], value: 0.10001 }),
+  );
+  assert.equal(positive.verdict.status, "insufficient_evidence");
+  const unknown = completeReport(guardedRun({}, { ledger: [position()], value: null }));
+  assert.equal(unknown.verdict.status, "insufficient_evidence");
+  paperReportSchema.parse(negative);
+  paperReportSchema.parse(positive);
+  paperReportSchema.parse(unknown);
+});
+it("legacy reports retain their original profile without a synthetic verdict", () => {
+  const legacy = completeReport(guardedRun({ strategyProfile: "rotation-v1" }));
+  assert.equal("verdict" in legacy, false);
+  assert.equal(paperReportSchema.parse(legacy).strategyProfile, "rotation-v1");
+  assert.equal(paperReportSchema.parse(report).strategyProfile, undefined);
 });
 it("publisher snapshots reports, throttles intermediate writes, and flushes final results on the data branch", async () => {
   const original = globalThis.fetch,

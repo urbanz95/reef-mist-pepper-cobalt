@@ -1,6 +1,21 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { PAPER_RISK } from "../../src/lib/paper-risk.ts";
 
+// GoPlus's official SDK distinguishes request-specific unavailable data from
+// shared auth (40xx), rate-limit (4029), and service (5000) failures:
+// https://github.com/GoPlusSecurity/goplus-sdk-js/blob/main/src/script/errorcode.js
+// The live endpoint also uses 2022 for an unsupported chain. None of these
+// request-specific codes supplies security evidence for the requested token.
+const TOKEN_RESPONSE_CODES = new Set([2, 2004, 2018, 2020, 2021, 2022, 2026, 2027, 2028]);
+const retryAfterMs = (res, at) => {
+  const retry = res.headers.get("retry-after");
+  return retry === null
+    ? 0
+    : /^\d+(\.\d+)?$/.test(retry)
+      ? Number(retry) * 1000
+      : Math.max(0, Date.parse(retry) - at);
+};
+
 // The public endpoint can return only the first address of a multi-token query.
 // Each request must bind one result to one token. Keep <= 2 requests per refresh
 // and >= 2.1 seconds between starts; a normal five-second loop uses <= 24/minute.
@@ -33,6 +48,7 @@ export function createSecurityProvider(fetcher = fetch, now = Date.now, { wait =
       detail:
         row?.error ??
         (status === "missing" ? "The provider returned no record for this token" : undefined),
+      providerCode: row?.providerCode,
     };
   };
   const needed = () =>
@@ -69,26 +85,30 @@ export function createSecurityProvider(fetcher = fetch, now = Date.now, { wait =
           { signal: AbortSignal.timeout(5000) },
         );
         if (!res.ok) {
-          const e = new Error(`Security provider HTTP ${res.status}`),
-            retry = res.headers.get("retry-after");
-          e.retry =
-            retry === null
-              ? 0
-              : /^\d+(\.\d+)?$/.test(retry)
-                ? Number(retry) * 1000
-                : Math.max(0, Date.parse(retry) - now());
+          const e = new Error(`Security provider HTTP ${res.status}`);
+          e.retry = retryAfterMs(res, now());
           throw e;
         }
         const age = Number(res.headers.get("age") ?? 0);
         if (!Number.isFinite(age) || age < 0) throw new Error("Invalid security cache age");
         const data = await res.json();
-        if (
-          data.code !== 1 ||
-          !data.result ||
-          typeof data.result !== "object" ||
-          Array.isArray(data.result)
-        )
-          throw new Error("Security provider returned no supported result");
+        if (data?.code !== 1) {
+          const code = data?.code,
+            message = typeof data?.message === "string" ? `: ${data.message}` : "",
+            e = new Error(`Security provider code ${code ?? "missing"}${message}`);
+          e.providerCode = code;
+          // Unknown codes remain global failures: an undocumented outage or
+          // quota response must not accidentally bypass shared backoff.
+          e.tokenSpecific = TOKEN_RESPONSE_CODES.has(code);
+          e.retry = retryAfterMs(res, now());
+          throw e;
+        }
+        if (!data.result || typeof data.result !== "object" || Array.isArray(data.result)) {
+          const e = new Error("Security provider code 1 returned an invalid token result");
+          e.providerCode = data.code;
+          e.tokenSpecific = true;
+          throw e;
+        }
         const raw = Object.entries(data.result).find(([a]) => a.toLowerCase() === token)?.[1];
         if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Object.keys(raw).length) {
           counts.missing++;
@@ -97,6 +117,7 @@ export function createSecurityProvider(fetcher = fetch, now = Date.now, { wait =
           cache.set(token, {
             ...old,
             error: undefined,
+            providerCode: undefined,
             lastAttemptAt: attemptedAt,
             retryAt: now() + 30000,
           });
@@ -109,16 +130,23 @@ export function createSecurityProvider(fetcher = fetch, now = Date.now, { wait =
       } catch (e) {
         counts.failures++;
         lastError = e.message;
-        const retry = Math.max(backoff, Number.isFinite(e.retry) ? e.retry : 0);
-        nextRequest = now() + retry;
+        const retry = Math.max(
+          e.tokenSpecific ? 30000 : backoff,
+          Number.isFinite(e.retry) ? e.retry : 0,
+        );
+        const retryAt = now() + retry;
         cache.set(token, {
           ...old,
           lastAttemptAt: attemptedAt,
           error: e.message,
-          retryAt: nextRequest,
+          providerCode: e.providerCode,
+          retryAt,
         });
-        backoff = Math.min(900000, backoff * 2);
-        break;
+        if (!e.tokenSpecific) {
+          nextRequest = retryAt;
+          backoff = Math.min(900000, backoff * 2);
+          break;
+        }
       }
     }
     // Bound cached public records during long discovery runs.

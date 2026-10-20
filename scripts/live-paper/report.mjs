@@ -4,6 +4,45 @@ const providerSummary = (r) =>
   r.securityProvider
     ? `Token security: ${r.securityProvider.available} current responses, ${r.securityProvider.pending} queued, ${r.securityProvider.stale} expired, ${r.securityProvider.missingTokens} without a provider record, ${r.securityProvider.failedTokens} request errors. Received data still requires all security checks.\n\n`
     : "";
+function evidenceVerdict(run, books, trades) {
+  const closedTrades = trades.filter((t) => t.exitAt).length;
+  if (closedTrades === 0) {
+    if (
+      run.samples > 0 &&
+      run.executionQuotes > 0 &&
+      run.costQualifiedQuotes === 0 &&
+      !trades.some((t) => !t.exitAt)
+    )
+      return {
+        status: "no_cost_qualified_routes",
+        closedTrades,
+        message:
+          "No observed entry quote met the cost budget. No positions completed; profitability has not been validated.",
+      };
+    return {
+      status: "no_completed_trades",
+      closedTrades,
+      message:
+        "No positions completed. Quotes, screening and unchanged ETH balances do not validate trading profitability.",
+    };
+  }
+  if (
+    books.every((b) => b.totalPnlEth !== null) &&
+    books.reduce((n, b) => n + b.totalPnlEth, 0) < 0
+  )
+    return {
+      status: "negative_pnl",
+      closedTrades,
+      message:
+        "Observed net paper PnL across the virtual balances is below holding ETH. This test has not established a profitable strategy.",
+    };
+  return {
+    status: "insufficient_evidence",
+    closedTrades,
+    message:
+      "Completed paper positions are available for review. This limited sample does not establish repeatable profitability.",
+  };
+}
 export function completeReport(run) {
   const trades = run.books.flatMap((b) => b.ledger ?? []);
   const books = run.books.map((b) => {
@@ -22,6 +61,9 @@ export function completeReport(run) {
     ...run,
     books,
     trades,
+    ...(run.strategyProfile === "rotation-v2"
+      ? { verdict: evidenceVerdict(run, books, trades) }
+      : {}),
     updatedAt: new Date().toISOString(),
     netVsHoldingEth: books.map((b) => b.totalPnlEth),
   };
@@ -29,13 +71,26 @@ export function completeReport(run) {
 export function reportMarkdown(r) {
   const signals = r.entrySignals ?? [];
   const diagnostics = (r.poolCoverage ?? []).filter((p) => p.lastSimulation);
+  const evidence = r.verdict
+    ? `Test evidence: ${r.verdict.message} Completed positions: ${r.verdict.closedTrades}.\n\n`
+    : "";
+  const admissionCounters = [
+    r.entryAttempts !== undefined && `${r.entryAttempts} entry probe attempts`,
+    r.executionQuotes !== undefined && `${r.executionQuotes} exact entry/sale quotes`,
+    r.entryRejections !== undefined &&
+      `${r.entryRejections} expected entry rejections (not data errors)`,
+    r.priceObservations !== undefined && `${r.priceObservations} independent price observations`,
+    r.costQualifiedQuotes !== undefined &&
+      `${r.costQualifiedQuotes} cost-qualified entry quotes (not trades)`,
+  ].filter(Boolean);
+  const admission = admissionCounters.length ? admissionCounters.join("; ") + ".\n\n" : "";
   const diagnosticRows = diagnostics
     .map((p) => {
       const q = p.lastSimulation;
       return `| ${safe(p.label)} | ${p.id} | ${p.stage ?? "unknown"} | ${q.status === "passed" ? "buy/sell measured" : "unavailable"} | ${q.at} | ${q.block ?? "unknown"} | ${eth(q.inputEth)} | ${q.quantityRaw ?? "unknown"} | ${q.receivedEth === undefined ? "unknown" : eth(q.receivedEth)} | ${q.gasEth === undefined ? "unknown" : eth(q.gasEth)} | ${q.recovery === undefined ? "unknown" : (100 * q.recovery).toFixed(2) + "%"} | ${q.costGatePassed === undefined ? "unknown" : q.costGatePassed ? "passed" : "rejected"} | ${safe(q.reason ?? "")} |`;
     })
     .join("\n");
-  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\nStrategy version: ${r.strategyProfile ?? "legacy"}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n${providerSummary(r)}## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Latest entry signals\n\n| Balance ETH | Pool | Status | Observed rise | Required rise | Measured costs | Reason |\n|---|---|---|---|---|---|---|\n${signals.map((s) => `| ${s.capital} | ${s.pool} | ${s.status} | ${s.rise === undefined ? "unknown" : (s.rise * 100).toFixed(2) + "%"} | ${s.requiredRise === undefined ? "unknown" : (s.requiredRise * 100).toFixed(2) + "%"} | ${s.costFraction === undefined ? "unknown" : (s.costFraction * 100).toFixed(2) + "%"} | ${safe(s.reason)} |`).join("\n") || "| No executable entry signals in this sample |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Read-only execution diagnostics\n\nThese calls use no money and do not book positions. A successful buy/sell can still fail cost or security admission.\n\n| Pool | Address | Stage | Execution | UTC | Block | Input ETH | Raw token quantity | Sale-only ETH | Two-leg gas ETH | Immediate recovery before gas | 3% entry-loss gate | Reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n${diagnosticRows || "| No diagnostics yet |"}\n\n## Decision counts\n\n${Object.entries(
+  return `# Overnight live-market paper report\n\n**Virtual money only; LP fees/values or launch spot values and execution costs are modeled.**\n\nRun ${r.runId} · ${r.status} · segment ${r.segment}/${r.segments}. Started ${r.startedAt}; last update ${r.updatedAt}.\n\nStrategy version: ${r.strategyProfile ?? "legacy"}.\n\n${r.samples} samples; ${r.verifiedQuotes} verified quotes; ${r.errors} data errors. See samples.ndjson for raw evidence and errors.\n\n${evidence}${admission}${providerSummary(r)}## Per-balance result (ETH)\n\n| Initial | Value | Closed PnL | Open PnL | Total PnL | Modeled fees | Costs |\n|---|---|---|---|---|---|---|\n${r.books.map((b) => `| ${b.initial} | ${eth(b.value)} | ${eth(b.realizedPnlEth)} | ${eth(b.openPnlEth)} | ${eth(b.totalPnlEth)} | ${eth(b.fees)} | ${eth(b.costs)} |`).join("\n")}\n\n## Positions (ETH)\n\nTimes are UTC; open positions have no completed exit. Closed PnL is simulated, not on-chain realized money.\n\n| Balance | Pool | Address | Entry UTC | Exit UTC | Minutes held | Entry value | Current/exit value | Fees | Costs | Position PnL | Exit reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n${r.trades.map((t) => `| ${t.capital} | ${safe(t.label)} | ${t.pool} | ${t.entryAt} | ${t.exitAt ?? "OPEN"} | ${(t.durationSec / 60).toFixed(2)} | ${eth(t.entryValueEth)} | ${eth(t.valueEth)} | ${eth(t.feesEth)} | ${eth(t.costsEth)} | ${eth(t.pnlEth)} | ${safe(t.exitReason ?? "Still open")} |`).join("\n") || "| No positions opened yet |"}\n\n## Latest entry signals\n\n| Balance ETH | Pool | Status | Observed rise | Required rise | Measured costs | Reason |\n|---|---|---|---|---|---|---|\n${signals.map((s) => `| ${s.capital} | ${s.pool} | ${s.status} | ${s.rise === undefined ? "unknown" : (s.rise * 100).toFixed(2) + "%"} | ${s.requiredRise === undefined ? "unknown" : (s.requiredRise * 100).toFixed(2) + "%"} | ${s.costFraction === undefined ? "unknown" : (s.costFraction * 100).toFixed(2) + "%"} | ${safe(s.reason)} |`).join("\n") || "| No executable entry signals in this sample |"}\n\n## Pool coverage\n\n| Pool | Address | TVL USD | Observations | Successful probes | Failed probes | Latest screening result |\n|---|---|---|---|---|---|---|\n${r.poolCoverage.map((p) => `| ${safe(p.label)} | ${p.id} | ${p.tvlUsd.toFixed(2)} | ${p.observations} | ${p.probes} | ${p.failures} | ${safe(p.lastReason)} |`).join("\n")}\n\n## Read-only execution diagnostics\n\nThese calls use no money and do not book positions. A successful buy/sell can still fail cost or security admission.\n\n| Pool | Address | Stage | Execution | UTC | Block | Input ETH | Raw token quantity | Sale-only ETH | Two-leg gas ETH | Immediate recovery before gas | 3% entry-loss gate | Reason |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n${diagnosticRows || "| No diagnostics yet |"}\n\n## Decision counts\n\n${Object.entries(
     r.reasons,
   )
     .map(([k, v]) => `- ${v} × ${k}`)
@@ -107,6 +162,7 @@ export function reportFiles(r) {
                 securityDataCheckedAt: securityData.checkedAt,
                 securityDataRequestedAt: securityData.requestedAt,
                 securityDataDetail: securityData.detail,
+                securityProviderCode: securityData.providerCode,
               }
             : {}),
           ...(lastSimulation

@@ -18,7 +18,7 @@ The same token in another fee pool, or a shared known issuer/owner/top-three
 non-pool holder, cannot form a second simultaneous position.
 
 Each position stores its own exact raw token quantity, allocation, gas reserve,
-entry block/time, high water, exit request and ledger ID. A sell-only constructor
+entry block/time, high water initialized to its measured net liquidation value, exit request and ledger ID. A sell-only constructor
 simulation injects that quantity into a disposable wallet's ERC20 balance mapping
 using read-only storage overrides. The mapping is proved by sentinel and actual
 quantity `balanceOf` reads; unsupported accounting fails closed. **No new buy or
@@ -34,11 +34,11 @@ are not modeled. Missing/stale/failed sales mean **unknown**, never a zero mark 
 invented closed trade. A gas quote above the reserved ETH cannot silently spend
 unallocated portfolio cash; the position remains open and needs review.
 
-The current `rotation-v1` profile requires 60 seconds of continuous observed prices,
+The current `rotation-v2` profile requires 60 seconds of continuous observed prices,
 rise at least max(0.3%, 1.5 times measured costs/allocation), positive recent trend,
 no 1% drawdown or >15% spike, then 30 seconds of signal confirmation. The paper
 liquidity floor is $20,000 and buys cannot exceed 0.25% of executable funding depth.
-Measured two-leg costs above 2.5% block entries. See [the rotation review](paper-rotation.md).
+Measured two-leg costs above 1% block entries. See [the rotation review](paper-rotation.md).
 There is **no minimum pool age** in paper trading. Stops apply independently:
 1% net position profit target, 3% loss trigger, 2% trailing trigger, 30% depth drop,
 or 15-minute maximum hold. Stalled non-profitable momentum can close after five
@@ -61,7 +61,7 @@ than 60 seconds block entry, except missing owner identity/full-balance-transfer
 flags can be resolved by the exact reviewed Pons runtime bound to verified factory
 registration. Its immutable deployer and current on-chain holdings replace the
 provider deployment-helper identity. Explicit positive risks are not overwritten;
-concentration and LP checks remain mandatory. Provider cache age is preserved. The free API uses individually paced single-token requests with fair refresh and held-token priority; failures and retry-after do not refresh old timestamps.
+concentration and LP checks remain mandatory. Provider cache age is preserved. Unsupported/pending token responses defer that token; shared rate limits, authorization and service failures still back off the queue. The free API uses individually paced single-token requests with fair refresh and held-token priority; failures and retry-after do not refresh old timestamps.
 This is external screening, not a source-code audit or a security guarantee.
 
 Liquidity protection supports the [verified Pons permanent-seed adapter](pons-paper-execution.md) and **canonical V2 pools with >=95% of LP
@@ -121,3 +121,9 @@ exit gas, missing security fields, LP proof, provider backoff, scanner catch-up 
 checkpoint accounting. They establish those behaviors, not future profitability.
 
 For the historical three modeled winners, the later Mimi loss, and the corrected security-provider integration, see [the admission comparison](security-admission-comparison.md).
+
+## Economic validation
+
+`rotation-v2` collects canonical price observations independently of security and execution admission; these observations never authorize a purchase. A recovered continuous minute can replace pre-gap history. Expected execution rejections have per-pool/per-balance retry delays and are counted separately from transport failures; held-position sales never use these entry delays.
+
+The 1% round-trip cost ceiling is a research budget, not an estimated profitable threshold. Reports distinguish no completed trades, no measured cost-qualified routes, losses, and insufficient evidence. A flat ETH balance with no trades provides no evidence of profitable execution. The [economic audit](degen-economic-audit-2026-10-20.md) documents why observed Pons spot routes were not economically suitable and why this experiment does not validate the funded V3 LP contracts.

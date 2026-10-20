@@ -7,7 +7,7 @@ price loss, and could not evaluate replacements while both slots were occupied.
 GoPlus also omitted owner and `cannot_sell_all` fields for a verifiable Pons token
 template and attributed creation to a deployment helper rather than its issuer.
 
-`rotation-v1` changes the **virtual guarded spot experiment**. Live keeper APR,
+`rotation-v2` changes the **virtual guarded spot experiment**. Live keeper APR,
 contract addresses, wallet permissions and funded execution are unchanged. No
 real-money trading is authorized or enabled by this profile.
 
@@ -15,9 +15,8 @@ real-money trading is authorized or enabled by this profile.
 
 - The paper TVL floor is $20,000, with an additional measured buy limit of 0.25%
   of executable funding depth. Costs include both gas legs, pool fees and impact;
-  costs above 2.5% of allocation or an immediate 3% liquidation loss block entry.
-  The 2.5% ceiling accommodates observed Pons fees near 2% before gas; it does
-  not make such trades economically attractive on its own.
+  costs above 1% of allocation or an immediate 3% liquidation loss block entry.
+  The 1% ceiling is an explicit cost budget, not a calibrated profitability claim. Observed Pons costs around 2.4% fail this budget.
 - At least 60 seconds of continuous prices plus 30 seconds of persistent signal
   are required. The rise must exceed max(0.3%, 1.5 times measured costs/allocation),
   recent momentum must remain positive, and a 1% drawdown or >15% spike blocks it.
@@ -70,7 +69,9 @@ The 2% allocation per position and 4% combined allocation at entry remain. Both
 slots stay monitored while new candidates are evaluated. Each position retains
 its own exact quantity, ETH gas reserve, high water, entry time and ledger.
 
-Net profit 1%, loss 3%, trailing loss 2%, depth fall 30% and structural alerts
+The trailing high water starts at measured net liquidation value, so initial
+purchase friction does not trigger an artificial price stop. Net profit 1%, loss
+3%, trailing loss 2%, depth fall 30% and structural alerts
 request exits. Non-profitable stalled momentum can close after five minutes, and
 exposure is limited to 15 minutes. An ordinary price stop applies a 30-minute
 token cooldown. Other closes cool the token for ten minutes. Structural failures,
@@ -85,7 +86,7 @@ each gas leg once; neither operation fabricates a transaction receipt. Unknown
 sales preserve the open position and unknown valuation. Six entries per rolling
 hour and 24 per day limit churn; exits remain available at the entry limit.
 
-Reports identify `rotation-v1`, preserve the policy and per-balance signal reasons,
+Reports identify `rotation-v2`, preserve the policy and per-balance signal reasons,
 observed/required rise and measured costs. JSON, HTML and `signals.csv` expose these
 alongside positions, timestamps, durations and net PnL. Checkpoint restoration
 requires a matching strategy version and reconciled balances; previous run results
@@ -100,3 +101,16 @@ portfolio loss and bytecode mutation/identity binding. Local EVM tests and live
 read-only probes complement these deterministic scenarios. None establishes future
 profitability. A subsequent forward test must record actual hypothetical portfolio
 entries and exact-quantity exits before market performance can be assessed.
+
+## October 20 evidence and revision
+
+Version 2 fixes the cost-inflated trailing baseline, restarts momentum from the
+most recent continuous suffix after a gap, and separates canonical price research
+from admission. Unsupported security records no longer stall other tokens; actual
+shared provider failures retain global backoff. Expected entry reverts are counted
+separately and retried with bounded delays, while held sales stay prioritized.
+
+The [measured market audit](degen-economic-audit-2026-10-20.md) found no qualifying
+cheap alternate route. It also distinguishes the spot experiment from funded V3
+LP execution. These corrections establish behavior and improve evidence; they
+do not establish a profitable strategy or authorize funded trading.

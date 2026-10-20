@@ -199,9 +199,24 @@ export function PaperResults() {
               </div>
             ))}
           </dl>
+          {(report.verdict || (report.trades && trades.every((t) => !t.exitAt))) && (
+            <div role="status" className="mt-3 rounded-lg bg-surface-2 p-4 text-sm">
+              <p className="font-medium">Test evidence</p>
+              <p className="mt-1 text-muted">
+                {report.verdict?.message ??
+                  "No positions completed for this balance. Quotes and unchanged ETH balances do not validate trading profitability."}
+              </p>
+              {report.verdict && (
+                <p className="mt-2 text-xs text-muted">
+                  {report.verdict.closedTrades} completed positions across all virtual balances.
+                </p>
+              )}
+            </div>
+          )}
           <p className="mt-3 break-all text-sm">
             Strategy: {book.strategy ?? "baseline"} ·{" "}
-            {report.strategyProfile === "rotation-v1" && "Opportunity rotation · "}
+            {report.strategyProfile === "rotation-v1" && "Opportunity rotation v1 · "}
+            {report.strategyProfile === "rotation-v2" && "Rotation v2 · "}
             {book.strategy === "guarded"
               ? `Open positions: ${book.positions?.length ?? 0} / 2`
               : `Position: ${pool(book.state.current)}`}{" "}
@@ -227,12 +242,19 @@ export function PaperResults() {
                       {" · "}
                       {s.status}
                       <p className="mt-1 text-muted">{s.reason}</p>
-                      {s.rise !== undefined && (
+                      {(s.rise !== undefined ||
+                        s.requiredRise !== undefined ||
+                        s.costFraction !== undefined) && (
                         <p className="mt-1">
-                          Observed rise: {(s.rise * 100).toFixed(2)}% · Required:{" "}
-                          {((s.requiredRise ?? 0) * 100).toFixed(2)}%
-                          {s.costFraction !== undefined &&
-                            ` · Measured costs: ${(s.costFraction * 100).toFixed(2)}%`}
+                          {[
+                            s.rise !== undefined && `Observed rise: ${(s.rise * 100).toFixed(2)}%`,
+                            s.requiredRise !== undefined &&
+                              `Required: ${(s.requiredRise * 100).toFixed(2)}%`,
+                            s.costFraction !== undefined &&
+                              `Measured costs: ${(s.costFraction * 100).toFixed(2)}%`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </p>
                       )}
                     </li>
@@ -312,6 +334,24 @@ export function PaperResults() {
             {report.samples} observations · {report.verifiedQuotes} buy/sell probes (not trades) ·{" "}
             {report.errors} data errors · {operations.length} simulated operations for this balance
           </p>
+          {report.entryRejections !== undefined && (
+            <div className="mt-2 text-xs text-muted">
+              <p>
+                {report.entryRejections} expected entry rejections (not data errors)
+                {report.executionQuotes !== undefined &&
+                  ` · ${report.executionQuotes} exact entry/sale quotes`}
+                {report.priceObservations !== undefined &&
+                  ` · ${report.priceObservations} independent price observations`}
+                {report.costQualifiedQuotes !== undefined &&
+                  ` · ${report.costQualifiedQuotes} entry quotes within the cost budget`}
+              </p>
+              {report.costQualifiedQuotes !== undefined && (
+                <p className="mt-1">
+                  Meeting the cost budget does not prove profitability or authorize a trade.
+                </p>
+              )}
+            </div>
+          )}
           <h3 className="mt-6 font-semibold">Simulated operations</h3>
           {report.trades && (
             <>
@@ -464,7 +504,7 @@ export function PaperResults() {
               </summary>
               <p className="mt-3 text-xs text-muted">
                 Up to six entry candidates are checked per sample
-                {report.strategyProfile === "rotation-v1"
+                {report.strategyProfile?.startsWith("rotation-")
                   ? ", with different tokens and rotating research slots."
                   : ", with two fee tiers per token."}
                 Held positions are also monitored. Eligibility is experimental, not a security
