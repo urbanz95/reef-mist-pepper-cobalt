@@ -51,11 +51,10 @@ mutable-tax/transfer-pause/blacklist/whitelist/honeypot/buy/sell restrictions, z
 buy/sell/transfer tax, creator+owner holdings <=1%, holder distribution with at
 least 20 holders and ten reported top holders, each non-pool holder <=5% and the
 observed top holders <=20%. Missing fields, unavailable results and data older
-than 60 seconds block entry. Provider cache age is preserved. The free API is
-batched and throttled; failures and retry-after do not refresh old timestamps.
+than 60 seconds block entry. Provider cache age is preserved. The free API uses individually paced single-token requests with fair refresh and held-token priority; failures and retry-after do not refresh old timestamps.
 This is external screening, not a source-code audit or a security guarantee.
 
-Liquidity protection currently supports **canonical V2 pools with >=95% of LP
+Liquidity protection supports the [verified Pons permanent-seed adapter](pons-paper-execution.md) and **canonical V2 pools with >=95% of LP
 supply provably at zero/dead addresses**, read at the quote block. Canonical
 factory/token identity is also checked before any entry simulation. A provider's
 claim that a contract is a locker is insufficient: unsupported locker contracts
@@ -110,3 +109,5 @@ Unit and local EVM regressions exercise parallel positions, correlated tokens,
 exact-quantity exits, independent profit/loss, unknown valuations, insufficient
 exit gas, missing security fields, LP proof, provider backoff, scanner catch-up and
 checkpoint accounting. They establish those behaviors, not future profitability.
+
+For the historical three modeled winners, the later Mimi loss, and the corrected security-provider integration, see [the admission comparison](security-admission-comparison.md).

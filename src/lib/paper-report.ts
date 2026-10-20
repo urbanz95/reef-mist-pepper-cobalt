@@ -15,6 +15,7 @@ export const paperDecisionSchema = z.object({
 export const paperReportSchema = z.object({
   version: z.literal(1),
   executionProfile: z.literal("pons-v2").optional(),
+  securityProfile: z.literal("single-token-v1").optional(),
   runId: z.string().regex(/^\d+$/),
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -27,6 +28,30 @@ export const paperReportSchema = z.object({
   diagnosticProbes: z.number().optional(),
   chainObservations: z.number().optional(),
   securityProviderError: z.string().nullable().optional(),
+  securityProvider: z
+    .object({
+      requests: z.number(),
+      responses: z.number(),
+      missing: z.number(),
+      failures: z.number(),
+      tracked: z.number(),
+      available: z.number(),
+      pending: z.number(),
+      stale: z.number(),
+      missingTokens: z.number(),
+      failedTokens: z.number(),
+    })
+    .optional(),
+  entryScreening: z
+    .object({
+      observed: z.number(),
+      liquidityEligible: z.number(),
+      selected: z.number(),
+      approved: z.number(),
+      rejected: z.number(),
+      unknown: z.number(),
+    })
+    .optional(),
   monitor: z
     .object({
       healthy: z.boolean(),
@@ -122,6 +147,15 @@ export const paperReportSchema = z.object({
         securityStatus: z.enum(["approved", "rejected", "unknown"]).optional(),
         securityReasons: z.array(z.string()).optional(),
         securityCheckedAt: z.number().optional(),
+        entryBlockReason: z.string().nullable().optional(),
+        securityData: z
+          .object({
+            status: z.enum(["available", "stale", "pending", "not_requested", "missing", "error"]),
+            checkedAt: z.number(),
+            requestedAt: z.number().optional(),
+            detail: z.string().optional(),
+          })
+          .optional(),
         burnedLpFraction: amount.optional(),
       }),
     )

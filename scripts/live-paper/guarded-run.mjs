@@ -10,7 +10,12 @@ import { client, discover, currentPool, chainSnapshot, seedProvider } from "./ma
 import { resolveSpotMeta, sampleSpotPool, quoteHeldExit, spotDepth } from "./spot-market.mjs";
 import { createSecurityProvider, assessPoolSecurity } from "./security.mjs";
 import { createRiskMonitor } from "./risk-monitor.mjs";
-import { selectLaunchPools, selectPonsDiagnostics } from "./universe.mjs";
+import {
+  selectGuardedPools,
+  selectPonsDiagnostics,
+  guardedRouteBlock,
+  guardedAssessmentDeferred,
+} from "./universe.mjs";
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
 import { createPublisher } from "./publish.mjs";
@@ -44,6 +49,7 @@ const publish = createPublisher(),
 let run = {
   version: 1,
   executionProfile: "pons-v2",
+  securityProfile: "single-token-v1",
   runId: process.env.GITHUB_RUN_ID ?? "0",
   segment,
   segments,
@@ -128,6 +134,7 @@ async function save(final = false) {
   run.monitorCheckpoint = monitor.checkpoint;
   run.monitor = monitor.snapshot;
   run.securityProviderError = security.lastError;
+  run.securityProvider = security.snapshot;
   const report = completeReport(run);
   await writeFile(join(directory, "report.json.tmp"), JSON.stringify(report, null, 2));
   await rename(join(directory, "report.json.tmp"), join(directory, "report.json"));
@@ -136,7 +143,9 @@ async function save(final = false) {
     await writeFile(join(directory, name), content);
   if (process.env.GITHUB_STEP_SUMMARY)
     await writeFile(process.env.GITHUB_STEP_SUMMARY, files["report.md"]);
-  await publish(paperReportSchema.parse(report), final);
+  // Publish a real observation first; an empty startup snapshot can otherwise
+  // occupy the public CDN cache while healthy measurements are already running.
+  if (run.samples > 0 || final) await publish(paperReportSchema.parse(report), final);
 }
 function addDecisions(record, result, book) {
   const events = result.events?.length
@@ -211,13 +220,24 @@ try {
         c.observations++;
         c.lastSeenAt = record.at;
         c.tvlUsd = p.tvlUsd;
-        c.lastReason =
+        c.securityData = security.dataStatus(p.other, start);
+        if (
+          c.securityStatus === "approved" &&
+          start - c.securityCheckedAt > PAPER_RISK.maxSecurityAgeMs
+        ) {
+          c.securityStatus = "unknown";
+          c.securityReasons = [
+            "Previous security approval expired; a fresh assessment is required",
+          ];
+        }
+        c.entryBlockReason =
           p.executionBlock ??
           (p.tvlUsd < POLICY.minTvlUsd
             ? "Liquidity below minimum"
             : start - p.fetchedAt > METADATA_MAX_AGE_MS
               ? "Provider metadata expired"
-              : "Outside this sample security-check budget");
+              : (guardedRouteBlock(p, c) ?? guardedAssessmentDeferred(c, start)));
+        c.lastReason = c.entryBlockReason ?? "Outside this sample security-check budget";
       }
       const eligible = ranked.filter(
         (p) =>
@@ -226,7 +246,7 @@ try {
           start - p.fetchedAt <= METADATA_MAX_AGE_MS &&
           (universe === "discovered" || tokens.includes(p.other)),
       );
-      const selection = selectLaunchPools(eligible, run.probeWindow, start);
+      const selection = selectGuardedPools(eligible, run.probeWindow, run.poolCoverage, start);
       const diagnostics =
         !alarm && start - lastDiagnostics >= 30000 ? selectPonsDiagnostics(ranked, start) : [];
       if (diagnostics.length) lastDiagnostics = start;
@@ -247,7 +267,10 @@ try {
           ].map((p) => [p.id, p]),
         ).values(),
       ];
-      await security.refresh(selected.map((p) => p.other));
+      await security.refresh(
+        selected.map((p) => p.other),
+        { priorityTokens: held.map((p) => p.token) },
+      );
       let snapshot = await chainSnapshot();
       run.chainObservations++;
       record.chain = { ...snapshot, gasPrice: String(snapshot.gasPrice) };
@@ -262,6 +285,7 @@ try {
             c.securityStatus = assessment.status;
             c.securityReasons = assessment.reasons;
             c.securityCheckedAt = assessment.checkedAt;
+            c.securityData = assessment.providerData;
             c.burnedLpFraction = assessment.burnedLpFraction;
             c.liquidityKind = assessment.liquidityKind;
             c.protectedLiquidityFraction = assessment.protectedLiquidityFraction;
@@ -272,6 +296,21 @@ try {
           }
         }),
       );
+      const entryChecks = selection.selected.map((p) => assessments.get(p.id));
+      run.entryScreening = {
+        observed: ranked.length,
+        liquidityEligible: eligible.filter(
+          (p) =>
+            !guardedRouteBlock(
+              p,
+              run.poolCoverage.find((c) => c.id === p.id),
+            ),
+        ).length,
+        selected: entryChecks.length,
+        approved: entryChecks.filter((a) => a?.status === "approved").length,
+        rejected: entryChecks.filter((a) => a?.status === "rejected").length,
+        unknown: entryChecks.filter((a) => a?.status === "unknown").length,
+      };
       // Diagnostic calls are evidence only. They never become engine candidates.
       for (const pool of diagnostics) {
         const c = run.poolCoverage.find((c) => c.id === pool.id),

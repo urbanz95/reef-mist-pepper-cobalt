@@ -12,12 +12,46 @@ export const LAUNCH_DISCOVERY_PATHS = [
   "/new_pools?page=1&include=base_token,quote_token",
   "/trending_pools?include=base_token,quote_token",
 ];
+/** Entry support is narrower than read-only quote support. */
+export function guardedRouteBlock(pool, assessment) {
+  if (pool.dex === "uniswap-v2-robinhood" || pool.dex === "pons-v2-dex") return null;
+  if (pool.dex === "pons-v2")
+    return assessment?.stage === "graduated"
+      ? null
+      : "Entry requires verified Pons graduation and a permanent liquidity proof";
+  return "Entry liquidity-protection adapter unavailable for this venue";
+}
+export function guardedAssessmentDeferred(c, now) {
+  if (c?.securityStatus === "rejected" && now - c.securityCheckedAt < 60000)
+    return "Recent security rejection; recheck after the one-minute cooldown";
+  if (
+    c?.securityStatus === "unknown" &&
+    c.securityData?.status === "available" &&
+    now - c.securityCheckedAt < 60000
+  )
+    return "Provider responded but required security evidence is unresolved; recheck after one minute";
+  if (
+    c?.securityStatus === "unknown" &&
+    c.securityData?.status === "missing" &&
+    now - c.securityData.requestedAt < 30000
+  )
+    return "Provider has no token record; retry after 30 seconds";
+  return null;
+}
+export function selectGuardedPools(eligible, previous, coverage, now) {
+  const byId = new Map(coverage.map((p) => [p.id, p]));
+  const feasible = eligible.filter((p) => {
+    const c = byId.get(p.id);
+    return !guardedRouteBlock(p, c) && !guardedAssessmentDeferred(c, now);
+  });
+  return selectLaunchPools(feasible, previous, now);
+}
 export const PONS_DISCOVERY_PATHS = [
   "/dexes/pons-v2-dex/pools?page=1&include=base_token,quote_token",
   "/new_pools?page=1&include=base_token,quote_token",
   "/dexes/pons-v2/pools?page=1&include=base_token,quote_token",
   "/new_pools?page=2&include=base_token,quote_token",
-  "/new_pools?page=1&include=base_token,quote_token",
+  "/dexes/uniswap-v2-robinhood/pools?page=1&include=base_token,quote_token",
   "/trending_pools?include=base_token,quote_token",
 ];
 /** One curve and one graduated market, isolated from security admission. */

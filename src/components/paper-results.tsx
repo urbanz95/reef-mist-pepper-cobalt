@@ -232,6 +232,23 @@ export function PaperResults() {
                   new entries.
                 </p>
               )}
+              {report.entryScreening && (
+                <p className="mt-2 text-xs">
+                  Latest entry screening: {report.entryScreening.liquidityEligible} pools meet
+                  liquidity and supported-route rules; {report.entryScreening.selected} checked,{" "}
+                  {report.entryScreening.approved} approved, {report.entryScreening.rejected}{" "}
+                  rejected, {report.entryScreening.unknown} awaiting security evidence.
+                </p>
+              )}
+              {report.securityProvider && (
+                <p className="mt-2 text-xs text-muted">
+                  Token security coverage: {report.securityProvider.available} current responses,{" "}
+                  {report.securityProvider.pending} queued, {report.securityProvider.stale} expired,{" "}
+                  {report.securityProvider.missingTokens} without a provider record,{" "}
+                  {report.securityProvider.failedTokens} with request errors. Receiving data does
+                  not mean approval.
+                </p>
+              )}
               {book.positions?.map((p) => (
                 <div key={p.id} className="mt-3 border-t border-white/10 pt-3">
                   <p className="break-words">
@@ -432,6 +449,18 @@ export function PaperResults() {
                         {p.burnedLpFraction !== undefined
                           ? ` · Provably burned LP: ${(p.burnedLpFraction * 100).toFixed(2)}%`
                           : ""}
+                      </p>
+                    )}
+                    {p.entryBlockReason && (
+                      <p className="mt-1">Entry blocked: {p.entryBlockReason}</p>
+                    )}
+                    {p.securityData && (
+                      <p className="mt-1 text-muted">
+                        Token security data: {p.securityData.status}
+                        {p.securityData.checkedAt > 0
+                          ? ` · Checked ${time(new Date(p.securityData.checkedAt).toISOString())}`
+                          : ""}
+                        {p.securityData.detail ? ` · ${p.securityData.detail}` : ""}
                       </p>
                     )}
                     {p.protectedLiquidityFraction !== undefined &&

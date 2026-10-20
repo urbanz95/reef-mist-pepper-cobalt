@@ -288,6 +288,9 @@ export function stepGuardedBook(
           budget > b.cash
         )
           return [];
+        // Do not open a position that already crosses its loss trigger when its
+        // actual quantity is sold into the unchanged pool, including both gas legs.
+        if (q.receivedEth + reserve - q.gasEth < budget * (1 - LAUNCH_POLICY.stopLoss)) return [];
         const h = history.filter((x) => x.id === p.id);
         if (h.length < 3 || now - h[0].at < LAUNCH_POLICY.confirmMs) return [];
         const rise = p.priceEth / h[0].price - 1,

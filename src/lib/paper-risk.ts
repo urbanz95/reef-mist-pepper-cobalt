@@ -88,7 +88,7 @@ export function assessTokenSecurity(
   pool: { id: string; other: string },
   checkedAt: number,
   now: number,
-  liquidity: { status: string; fraction?: number; reason: string },
+  liquidity: { status: string; fraction?: number; reason: string; permanentHolders?: string[] },
 ): SecurityAssessment {
   const rejected: string[] = [],
     unknown: string[] = [],
@@ -168,6 +168,7 @@ export function assessTokenSecurity(
         ...BURN_ADDRESSES,
         pool.id.toLowerCase(),
         "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+        ...(liquidity.status === "approved" ? (liquidity.permanentHolders ?? []) : []),
       ]),
       totals = new Map<string, number>();
     for (const h of holders) {

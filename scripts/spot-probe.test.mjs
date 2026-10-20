@@ -59,7 +59,7 @@ contract Curve {
   out=n*99/100*1000;token.mint(to,out);if(mode==2)ready=true;
  }
  function sell(uint256 n,uint256,address to)external returns(uint256 out){
-  require(mode!=3 && !ready,"curve closed");token.transferFrom(msg.sender,address(this),n);
+  require(mode!=3 && !ready,"curve closed");if(mode==4)n/=2;token.transferFrom(msg.sender,address(this),n);
   out=n/1000*99/100;(bool ok,)=to.call{value:out}("");require(ok);
  }
 }
@@ -275,7 +275,7 @@ it("Pons curve eth_call measures fees and sells the exact held amount; partial f
   const sale = await exit(),
     [received] = decodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], sale.data);
   assert.equal(received, recovered);
-  for (const mode of [1, 2]) {
+  for (const mode of [1, 2, 4]) {
     const hash = await wallet.writeContract({
       address: curve,
       abi: art("Mocks.sol", "Curve").abi,
@@ -284,6 +284,7 @@ it("Pons curve eth_call measures fees and sells the exact held amount; partial f
     });
     await client.waitForTransactionReceipt({ hash });
     await assert.rejects(buy());
+    if (mode === 4) await assert.rejects(exit(), /partial token sale/);
   }
   const hash = await wallet.writeContract({
     address: curve,
