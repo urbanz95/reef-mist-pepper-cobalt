@@ -2,9 +2,8 @@ import { mkdir, appendFile, writeFile, rename, readFile } from "node:fs/promises
 import { join, resolve } from "node:path";
 import { newLiveBook, stepLiveBook } from "../../src/lib/live-paper.ts";
 import { validateGuardedCheckpoint } from "../../src/lib/guarded-paper.ts";
-import { PAPER_RISK, positionBudget } from "../../src/lib/paper-risk.ts";
+import { PAPER_RISK, PAPER_ROTATION } from "../../src/lib/paper-risk.ts";
 import { CONTRACTS } from "../../src/lib/chain.ts";
-import { POLICY } from "../../src/lib/degen-policy.ts";
 import { paperReportSchema } from "../../src/lib/paper-report.ts";
 import { client, discover, currentPool, chainSnapshot, seedProvider } from "./market.mjs";
 import { resolveSpotMeta, sampleSpotPool, quoteHeldExit, spotDepth } from "./spot-market.mjs";
@@ -15,6 +14,7 @@ import {
   selectPonsDiagnostics,
   guardedRouteBlock,
   guardedAssessmentDeferred,
+  rankGuardedPools,
 } from "./universe.mjs";
 import { METADATA_MAX_AGE_MS } from "./provider.mjs";
 import { completeReport, reportFiles, resumeReport } from "./report.mjs";
@@ -50,6 +50,7 @@ let run = {
   version: 1,
   executionProfile: "pons-v2",
   securityProfile: "single-token-v1",
+  strategyProfile: PAPER_ROTATION.version,
   runId: process.env.GITHUB_RUN_ID ?? "0",
   segment,
   segments,
@@ -76,19 +77,21 @@ let run = {
   latest: null,
   heldPoolMetadata: [],
   riskPolicy: PAPER_RISK,
+  strategyPolicy: PAPER_ROTATION,
   assumptions: [
     "Virtual spot experiment only: no private key, signing or transaction broadcast. No guaranteed profit. Pool age has no minimum in this paper experiment.",
     "At most two independent positions per balance, each at most 2% of initial/current equity; at most 4% allocated, including reserved gas. At least 96% stays as unallocated ETH on initial entry. Later losses can change that percentage.",
     "A sale-only eth_call uses the EXACT quantity virtually held, with a proved ERC20 balance storage override. It does not buy first or alter pool reserves. Unsupported token accounting, stale quotes and reverts produce UNKNOWN value; no invented fills.",
     "Reported positions are hypothetical independent of the real pool: paper buys do not change future chain state. Sale quotes include pool fees/impact and an exit gas estimate, with 51,000 gas allowance and 50% margin. Additional data fees are excluded. These are not transaction receipts.",
-    "Entry requires fresh explicit GoPlus negatives, verified source, no proxy/mint/tax/blacklist/control flags, creator/owner <=1%, each observed non-pool holder <=5%, observed top holders <=20%, and holder distribution coverage. Unknown or expired information blocks entry.",
+    "Entry requires fresh GoPlus screening, no explicit risk flags, creator/owner <=1%, each non-protected holder <=5%, observed top holders <=20%, and holder coverage. For the exact reviewed Pons token runtime only, factory-bound immutable bytecode proves no administrative owner and unrestricted full-balance transfers; on-chain immutable issuer holdings replace the provider's deployment-helper identity. Other missing evidence blocks entry.",
     "Liquidity proof supports canonical V2 >=95% burned LP, and registered Pons V4 permanent seed positions with a pinned reviewed locker runtime, matching pool/range/owner, no NFT approval and >=95% of active liquidity. Curves, unreviewed earlier lockers and generic V3/V4 remain observation-only for entries.",
     "Pons curves and graduated V4 pools have separate identity, stage and read-only execution probes. Up to one curve and one graduated pool are diagnostically tested every 30 seconds even when entry gates fail. Passing an execution probe does not authorize a trade. Partial curve fills and closed graduation phases are rejected, not booked as full purchases.",
     "Issuer/owner/shared top-three-holder addresses prevent correlated simultaneous entries. This is limited address correlation, not a complete related-wallet or funding-graph investigation. Burning LP alone does not eliminate token/market risk.",
     "The block monitor polls every second and scans every intervening block in bounded ranges. Liquidity burns/removals, reserve falls, mints and ownership changes request exit. Normal valuation targets five seconds; slow RPC can delay it. A rug within one transaction may complete before detection or exit.",
-    "A confirmed entry requires two minutes of price history and a further two minutes of momentum persistence, with rise >=max(0.5%, twice measured costs/allocation). Per-position net profit target 1%, loss trigger 3%, trailing trigger 2%, depth drop 30%, maximum hold 30 minutes. Stops cannot guarantee execution or a loss limit.",
-    "Security deterioration or unavailable block monitoring requests exit. Missing exact-sale quotes keep the position open and its value unknown. Exit gas must fit its position reserve; the rest of the ETH balance is not silently used. A risk exit latches new entries; other positions remain monitored.",
-    "Up to four entries per rolling day and 30-minute per-token cooldown. Segments restore quantities, cash, reserved gas and independent ledgers; monitoring gaps reset entry confirmation and request held-position exits.",
+    "Paper rotation uses a $20,000 liquidity floor AND a buy no larger than 0.25% of executable funding depth. Entry needs 60 seconds of continuous prices and 30 seconds of cost-covered trend confirmation, rise >=max(0.3%, 1.5 times measured costs/allocation), positive recent trend, no 1% drawdown or >15% spike. Costs over 2.5% block entry; Pons pools can charge about 2% before gas, so the threshold explicitly budgets these fees.",
+    "Per-position net profit target 1%, price loss trigger 3%, trailing trigger 2%, depth drop 30%, maximum hold 15 minutes; a stalled non-profitable trend can close after five minutes. A stronger confirmed candidate can replace a position held for at least two minutes only when its observed advantage exceeds switching costs plus 0.3%. Momentum is an observed signal, not forecast profit. Stops do not guarantee execution.",
+    "Security deterioration or unavailable block monitoring requests exit and latches entries. Missing exact-sale quotes keep positions open and value unknown. Exit gas must fit its reserve. Ordinary price stops cool only that token for 30 minutes; a 1% total portfolio loss latches entries. Other positions remain monitored.",
+    "Up to six entries per rolling hour and 24 per rolling day; ten-minute per-token cooldown after other closes. Segments restore quantities, cash, gas reserves and ledgers; monitoring gaps reset confirmation and request held exits. No real keeper parameters or contracts are changed.",
     "Discovery uses provider-indexed new/trending pages with shared rate limits and backoff. Pool creation evidence does not prove migration from a launchpad. Unverified migration remains unconfirmed.",
   ],
 };
@@ -98,6 +101,7 @@ if (segment > 1) {
   run = resumeReport(saved, { runId: run.runId, capitals, strategy: "guarded", segment });
   if (
     run.universe !== universe ||
+    run.strategyProfile !== PAPER_ROTATION.version ||
     run.books.some((b) => b.portfolioVersion !== 2 || !Array.isArray(b.positions))
   )
     throw new Error("Guarded checkpoint mismatch; refusing legacy all-in state");
@@ -182,7 +186,7 @@ try {
     try {
       // Once an alarm is pending, spend the iteration on held-position sales first.
       const alarm = monitor.snapshot.alerts.length > 0;
-      if (!alarm && start - lastFeedAttempt >= 30000) {
+      if (!alarm && start - lastFeedAttempt >= 5000) {
         lastFeedAttempt = start;
         try {
           feed = await discover();
@@ -195,9 +199,7 @@ try {
       record.feed = feed
         ? { fetchedAt: feed.fetchedAt, requestStats: feed.requestStats, pools: feed.pools }
         : null;
-      const ranked = [...(feed?.pools ?? [])].sort(
-        (a, b) => b.createdAt - a.createdAt || b.volume24h / b.tvlUsd - a.volume24h / a.tvlUsd,
-      );
+      const ranked = rankGuardedPools(feed?.pools ?? []);
       for (const p of ranked) {
         let c = run.poolCoverage.find((c) => c.id === p.id);
         if (!c) {
@@ -232,8 +234,8 @@ try {
         }
         c.entryBlockReason =
           p.executionBlock ??
-          (p.tvlUsd < POLICY.minTvlUsd
-            ? "Liquidity below minimum"
+          (p.tvlUsd < PAPER_ROTATION.minTvlUsd
+            ? "Liquidity below paper spot minimum ($20,000)"
             : start - p.fetchedAt > METADATA_MAX_AGE_MS
               ? "Provider metadata expired"
               : (guardedRouteBlock(p, c) ?? guardedAssessmentDeferred(c, start)));
@@ -242,7 +244,7 @@ try {
       const eligible = ranked.filter(
         (p) =>
           !p.executionBlock &&
-          p.tvlUsd >= POLICY.minTvlUsd &&
+          p.tvlUsd >= PAPER_ROTATION.minTvlUsd &&
           start - p.fetchedAt <= METADATA_MAX_AGE_MS &&
           (universe === "discovered" || tokens.includes(p.other)),
       );
@@ -286,6 +288,9 @@ try {
             c.securityReasons = assessment.reasons;
             c.securityCheckedAt = assessment.checkedAt;
             c.securityData = assessment.providerData;
+            c.tokenEvidence = assessment.tokenEvidence;
+            if (assessment.status === "approved")
+              c.securityApprovedCount = (c.securityApprovedCount ?? 0) + 1;
             c.burnedLpFraction = assessment.burnedLpFraction;
             c.liquidityKind = assessment.liquidityKind;
             c.protectedLiquidityFraction = assessment.protectedLiquidityFraction;
@@ -370,13 +375,13 @@ try {
           points = [],
           exitQuotes = [],
           localAlerts = [];
-        const budget = positionBudget(book.initial, book.value, book.cash, book.positions);
-        const canEnter =
-          budget > 0 &&
-          !alarm &&
-          !book.state.halted &&
-          book.value !== null &&
-          book.positions.length < PAPER_RISK.maxPositions;
+        // Screen replacements even with both slots occupied. The engine still
+        // checks the exact available allocation before settling a rotation.
+        const budget =
+          book.value === null
+            ? 0
+            : Math.min(book.initial, book.value) * PAPER_RISK.positionFraction;
+        const canEnter = budget > 0 && !alarm && !book.state.halted && book.value !== null;
         if (canEnter) {
           const candidates = selection.selected.filter(
             (p) =>
@@ -495,10 +500,17 @@ try {
           alerts: [...risk.alerts, ...localAlerts],
           monitorHealthy: risk.healthy,
         });
+        record.entrySignals ??= [];
+        record.entrySignals.push(...result.signals.map((s) => ({ ...s, capital: book.initial })));
+        for (const signal of result.signals) {
+          const c = run.poolCoverage.find((p) => p.id === signal.pool);
+          if (c) c.lastReason = `${book.initial} ETH: ${signal.reason}`;
+        }
         run.books[i] = result.book;
         addDecisions(record, result, book);
       }
       monitor.setPositions(await heldForMonitor());
+      run.entrySignals = record.entrySignals ?? [];
       record.monitor = monitor.snapshot;
       run.monitor = record.monitor;
     } catch (e) {

@@ -120,6 +120,40 @@ it("report preserves unknown PnL, strips private/unrelated fields and detects st
     paperReportSchema.parse({ ...report, books: [{ ...report.books[0], value: NaN }] }),
   );
 });
+it("rotation policy and balance-specific cost/signal evidence survive public JSON and CSV without inventing trades", () => {
+  const parsed = paperReportSchema.parse({
+    ...report,
+    strategyProfile: "rotation-v1",
+    strategyPolicy: { version: "rotation-v1", minTvlUsd: 20000 },
+    entrySignals: [
+      {
+        capital: 0.1,
+        pool: "pool",
+        status: "blocked",
+        reason: "Costs exceed trend",
+        rise: 0.01,
+        requiredRise: 0.035,
+        costFraction: 0.023,
+      },
+      { capital: 0.5, pool: "pool", status: "warming", reason: "Collecting history" },
+    ],
+    trades: [],
+    poolCoverage: [],
+  });
+  assert.equal(parsed.entrySignals[0].capital, 0.1);
+  assert.equal(parsed.entrySignals[1].capital, 0.5);
+  assert.equal(parsed.strategyPolicy.minTvlUsd, 20000);
+  assert.equal(parsed.trades.length, 0);
+  const files = reportFiles({
+    ...parsed,
+    assumptions: [],
+    books: [{ ...parsed.books[0], realizedPnlEth: 0, openPnlEth: null, totalPnlEth: null }],
+  });
+  assert.match(files["signals.csv"], /Costs exceed trend/);
+  assert.match(files["signals.csv"], /Collecting history/);
+  assert.match(files["report.html"], /rotation-v1/);
+  assert.match(files["report.html"], /3.50%/);
+});
 it("publisher snapshots reports, throttles intermediate writes, and flushes final results on the data branch", async () => {
   const original = globalThis.fetch,
     env = { ...process.env };

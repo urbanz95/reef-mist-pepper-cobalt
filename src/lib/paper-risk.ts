@@ -8,6 +8,33 @@ export const PAPER_RISK = {
   maxTopHolders: 0.2,
   maxIssuer: 0.01,
 } as const;
+/** Paper spot parameters are independent of the live LP keeper's APR policy. */
+export const PAPER_ROTATION = {
+  version: "rotation-v1",
+  minTvlUsd: 20_000,
+  historyMs: 120_000,
+  lookbackMs: 60_000,
+  confirmMs: 30_000,
+  minObservations: 3,
+  minRise: 0.003,
+  costMargin: 1.5,
+  maxEntryCostFraction: 0.025,
+  maxInputDepthFraction: 0.0025,
+  maxDrawdown: 0.01,
+  maxRise: 0.15,
+  stopLoss: 0.03,
+  trailingLoss: 0.02,
+  profit: 0.01,
+  minHoldMs: 120_000,
+  stagnantMs: 5 * 60_000,
+  maxHoldMs: 15 * 60_000,
+  rotationMargin: 0.003,
+  cooldownMs: 10 * 60_000,
+  lossCooldownMs: 30 * 60_000,
+  maxTradesPerDay: 24,
+  maxTradesPerHour: 6,
+  portfolioLossFraction: 0.01,
+} as const;
 export type SecurityAssessment = {
   token: string;
   liquidityBlock?: string;

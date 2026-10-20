@@ -38,19 +38,58 @@ export function guardedAssessmentDeferred(c, now) {
     return "Provider has no token record; retry after 30 seconds";
   return null;
 }
+export function rankGuardedPools(pools) {
+  const activity = (p) =>
+    Math.log1p(Math.max(0, Number(p.volume5m ?? p.volume24h / 288) || 0)) +
+    Math.min(5, Math.max(0, Number(p.volume24h) / Math.max(1, p.tvlUsd) || 0));
+  return [...pools].sort((a, b) => activity(b) - activity(a) || a.id.localeCompare(b.id));
+}
 export function selectGuardedPools(eligible, previous, coverage, now) {
   const byId = new Map(coverage.map((p) => [p.id, p]));
   const feasible = eligible.filter((p) => {
     const c = byId.get(p.id);
     return !guardedRouteBlock(p, c) && !guardedAssessmentDeferred(c, now);
   });
-  return selectLaunchPools(feasible, previous, now);
+  const distinct = new Map();
+  for (const p of rankGuardedPools(feasible)) if (!distinct.has(p.other)) distinct.set(p.other, p);
+  const previouslyProved = (p) => {
+    const c = byId.get(p.id);
+    return (
+      c?.securityStatus === "approved" ||
+      (c?.securityApprovedCount > 0 && c.securityStatus !== "rejected")
+    );
+  };
+  const all = [...distinct.values()].sort(
+      (a, b) => Number(previouslyProved(b)) - Number(previouslyProved(a)),
+    ),
+    byPool = new Map(all.map((p) => [p.id, p]));
+  const continuing = previous && now - previous.startedAt < 180000;
+  if (continuing) {
+    const kept = previous.ids.map((id) => byPool.get(id)).filter(Boolean);
+    // A newly proved diagnostic must gain an entry slot immediately. Keeping
+    // six unresolved tokens until window expiry starves genuine price history.
+    const selected = [
+      ...new Map([...all.filter(previouslyProved), ...kept, ...all].map((p) => [p.id, p])).values(),
+    ].slice(0, 6);
+    return { selected, window: { ...previous, ids: selected.map((p) => p.id) } };
+  }
+  const leaders = all.slice(0, 4),
+    research = all.slice(4);
+  const cursor = previous ? (previous.cursor ?? 0) + 2 : 0;
+  const selected = [
+    ...leaders,
+    ...Array.from(
+      { length: Math.min(2, research.length) },
+      (_, i) => research[(cursor + i) % research.length],
+    ),
+  ];
+  return { selected, window: { startedAt: now, cursor, ids: selected.map((p) => p.id) } };
 }
 export const PONS_DISCOVERY_PATHS = [
   "/dexes/pons-v2-dex/pools?page=1&include=base_token,quote_token",
   "/new_pools?page=1&include=base_token,quote_token",
   "/dexes/pons-v2/pools?page=1&include=base_token,quote_token",
-  "/new_pools?page=2&include=base_token,quote_token",
+  "/dexes/pons-v2-dex/pools?page=2&include=base_token,quote_token",
   "/dexes/uniswap-v2-robinhood/pools?page=1&include=base_token,quote_token",
   "/trending_pools?include=base_token,quote_token",
 ];

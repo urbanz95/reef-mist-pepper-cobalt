@@ -201,11 +201,51 @@ export function PaperResults() {
           </dl>
           <p className="mt-3 break-all text-sm">
             Strategy: {book.strategy ?? "baseline"} ·{" "}
+            {report.strategyProfile === "rotation-v1" && "Opportunity rotation · "}
             {book.strategy === "guarded"
               ? `Open positions: ${book.positions?.length ?? 0} / 2`
               : `Position: ${pool(book.state.current)}`}{" "}
             · {book.state.halted ? "Risk stop latched" : "No active risk stop"}
           </p>
+          {report.entrySignals && (
+            <details className="mt-3 rounded-lg bg-surface-2 p-4" open>
+              <summary className="cursor-pointer text-sm font-medium">
+                Entry signals for {book.initial} ETH
+              </summary>
+              <p className="mt-2 text-xs text-muted">
+                Candidates need a sustained trend above measured costs. A change of pool also needs
+                enough improvement to cover switching costs.
+              </p>
+              <ul className="mt-3 space-y-3">
+                {report.entrySignals
+                  .filter((s) => s.capital === book.initial)
+                  .map((s) => (
+                    <li key={s.pool} className="border-t border-white/10 pt-3 text-xs">
+                      <strong>
+                        {report.poolCoverage?.find((p) => p.id === s.pool)?.label ?? pool(s.pool)}
+                      </strong>
+                      {" · "}
+                      {s.status}
+                      <p className="mt-1 text-muted">{s.reason}</p>
+                      {s.rise !== undefined && (
+                        <p className="mt-1">
+                          Observed rise: {(s.rise * 100).toFixed(2)}% · Required:{" "}
+                          {((s.requiredRise ?? 0) * 100).toFixed(2)}%
+                          {s.costFraction !== undefined &&
+                            ` · Measured costs: ${(s.costFraction * 100).toFixed(2)}%`}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+              {!report.entrySignals.some((s) => s.capital === book.initial) && (
+                <p className="mt-3 text-xs text-muted">
+                  No executable candidates in this sample. See pool screening for security and
+                  liquidity blockers.
+                </p>
+              )}
+            </details>
+          )}
           {book.strategy === "guarded" && (
             <div className="mt-3 rounded-lg bg-surface-2 p-4 text-sm">
               <p>
@@ -423,7 +463,10 @@ export function PaperResults() {
                 Other pools screened ({report.poolCoverage.length})
               </summary>
               <p className="mt-3 text-xs text-muted">
-                Up to six entry candidates are checked per sample, with two fee tiers per token.
+                Up to six entry candidates are checked per sample
+                {report.strategyProfile === "rotation-v1"
+                  ? ", with different tokens and rotating research slots."
+                  : ", with two fee tiers per token."}
                 Held positions are also monitored. Eligibility is experimental, not a security
                 approval.
               </p>

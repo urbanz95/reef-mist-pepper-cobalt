@@ -1,12 +1,13 @@
 import type { LiveBook, MarketPoint } from "./live-paper.ts";
 import {
   PAPER_RISK,
+  PAPER_ROTATION as R,
   positionBudget,
   type GuardedPosition,
   type GuardedContext,
   type ExitQuote,
 } from "./paper-risk.ts";
-import { LAUNCH_POLICY } from "./launch-paper.ts";
+import { entrySignal, fillBudget, observedMomentum, type EntrySignal } from "./paper-signals.ts";
 import { POLICY, type Decision } from "./degen-policy.ts";
 const quoteFor = (q: ExitQuote[], p: GuardedPosition, now: number) =>
   q.find(
@@ -22,12 +23,6 @@ const quoteFor = (q: ExitQuote[], p: GuardedPosition, now: number) =>
       Number.isFinite(x.gasEth) &&
       x.gasEth >= 0,
   );
-const approved = (p: MarketPoint, now: number) =>
-  p.security?.status === "approved" &&
-  p.security.token === p.token &&
-  p.security.liquidityBlock === p.block &&
-  p.security.checkedAt <= now &&
-  now - p.security.checkedAt <= PAPER_RISK.maxSecurityAgeMs;
 /** Restored balances must reconcile. A damaged checkpoint must never reset risk. */
 export function validateGuardedCheckpoint(book: LiveBook) {
   const positions = book.positions,
@@ -110,6 +105,7 @@ export function stepGuardedBook(
     ledger: (previous.ledger ?? []).map((t) => ({ ...t })),
     challenges: { ...previous.challenges },
     tokenCooldowns: { ...previous.tokenCooldowns },
+    lossCooldowns: { ...previous.lossCooldowns },
   };
   const events: {
     action: Decision["action"];
@@ -127,13 +123,27 @@ export function stepGuardedBook(
   );
   const monitoring =
     previous.lastAt > 0 &&
-    now - previous.lastAt > 0 &&
+    now > previous.lastAt &&
     now - previous.lastAt <= POLICY.maxSchedulerGapMs &&
     context.monitorHealthy === true;
   const history = monitoring
-    ? (previous.prices ?? []).filter((h) => now - h.at <= LAUNCH_POLICY.historyMs)
+    ? (previous.prices ?? []).filter((h) => h.at <= now && now - h.at <= R.historyMs)
     : [];
   b.prices = [...history, ...fresh.map((p) => ({ id: p.id, at: now, price: p.priceEth }))];
+  const settle = (p: GuardedPosition, net: number, gas: number, reason: string, loss = false) => {
+    const trade = b.ledger!.find((t) => t.id === p.id)!;
+    b.cash += net;
+    b.costs += gas;
+    trade.valueEth = net;
+    trade.pnlEth = net - p.allocationEth;
+    trade.durationSec = Math.max(0, (now - p.entryAt) / 1000);
+    trade.exitAt = new Date(now).toISOString();
+    trade.exitReason = reason;
+    trade.costsEth += gas;
+    b.tokenCooldowns![p.token] = now;
+    if (loss) b.lossCooldowns![p.token] = now;
+    events.push({ action: "exit", reason, pool: p.pool, chargedEth: gas });
+  };
   const retained: GuardedPosition[] = [];
   for (const p of b.positions!) {
     const market = fresh.find((x) => x.id === p.pool),
@@ -145,21 +155,22 @@ export function stepGuardedBook(
     if (context.monitorHealthy !== true) p.exitRequested = "Block monitoring unavailable";
     if (!monitoring && now - previous.lastAt > POLICY.maxSchedulerGapMs)
       p.exitRequested = "Continuous monitoring gap";
-    if (p.exitRequested) b.state.halted = true;
-    const depthDrop = !!(
+    if (
       market?.reserveEth &&
       p.entryDepthEth > 0 &&
       market.reserveEth <= p.entryDepthEth * (1 - POLICY.liquidityDrop)
-    );
-    if (depthDrop) p.exitRequested = "Executable liquidity dropped 30%";
+    )
+      p.exitRequested = "Executable liquidity dropped 30%";
+    // Structural/security failures latch the portfolio. An ordinary price stop
+    // closes its position and cools that token without killing the whole run.
     if (p.exitRequested) b.state.halted = true;
+    const trade = b.ledger!.find((t) => t.id === p.id)!;
+    trade.durationSec = Math.max(0, (now - p.entryAt) / 1000);
     if (!quote) {
       p.markedValueEth = null;
-      retained.push(p);
-      const trade = b.ledger!.find((t) => t.id === p.id)!;
       trade.valueEth = null;
       trade.pnlEth = null;
-      trade.durationSec = Math.max(0, (now - p.entryAt) / 1000);
+      retained.push(p);
       events.push({
         action: "blocked",
         reason: p.exitRequested
@@ -175,149 +186,101 @@ export function stepGuardedBook(
     p.lastQuoteAt = quote.fetchedAt;
     p.highWaterEth = Math.max(p.highWaterEth, net);
     const loss =
-      net <= p.allocationEth * (1 - LAUNCH_POLICY.stopLoss) ||
-      net <= p.highWaterEth * (1 - LAUNCH_POLICY.trailingLoss);
-    const profit = net >= p.allocationEth * (1 + LAUNCH_POLICY.profit);
-    const timed = now - p.entryAt >= LAUNCH_POLICY.maxHoldMs;
-    const risk = !!p.exitRequested || loss;
+      net <= p.allocationEth * (1 - R.stopLoss) || net <= p.highWaterEth * (1 - R.trailingLoss);
+    const profit = net >= p.allocationEth * (1 + R.profit),
+      heldMs = now - p.entryAt;
+    const momentum = observedMomentum(b.prices, p.pool, now);
+    const stagnant =
+      heldMs >= R.stagnantMs &&
+      momentum &&
+      momentum.recentRise <= 0 &&
+      net < p.allocationEth * 1.002;
     const reason =
       p.exitRequested ??
       (loss
         ? "Position loss / trailing stop"
         : profit
           ? "Position net profit target"
-          : timed
-            ? "30-minute exposure limit"
-            : null);
-    const trade = b.ledger!.find((t) => t.id === p.id)!;
+          : heldMs >= R.maxHoldMs
+            ? "15-minute exposure limit"
+            : stagnant
+              ? "Momentum stalled for five minutes; release allocation"
+              : null);
     trade.valueEth = net;
     trade.pnlEth = net - p.allocationEth;
-    trade.durationSec = Math.max(0, (now - p.entryAt) / 1000);
-    if (reason) {
-      if (risk) b.state.halted = true;
-      // An exit is only settled when its gas fits the reserved ETH. Unknown funding
-      // requirements must not silently spend the rest of the portfolio.
-      if (quote.gasEth > p.exitReserveEth) {
+    if (reason && quote.gasEth <= p.exitReserveEth) settle(p, net, quote.gasEth, reason, loss);
+    else {
+      if (reason) {
         p.exitRequested = reason;
-        retained.push(p);
+        b.state.halted = true;
         events.push({
           action: "blocked",
           reason: "Exit gas exceeds the position reserve; review required",
           pool: p.pool,
           chargedEth: 0,
         });
-        continue;
       }
-      b.cash += net;
-      b.costs += quote.gasEth;
-      trade.exitAt = new Date(now).toISOString();
-      trade.exitReason = reason;
-      trade.costsEth += quote.gasEth;
-      b.tokenCooldowns![p.token] = now;
-      if (risk) b.state.halted = true;
-      events.push({ action: "exit", reason, pool: p.pool, chargedEth: quote.gasEth });
-    } else retained.push(p);
+      retained.push(p);
+    }
   }
   b.positions = retained;
   const unknown = retained.some((p) => p.markedValueEth === null);
-  let equity = unknown ? null : b.cash + retained.reduce((n, p) => n + p.markedValueEth!, 0);
-  const budget = positionBudget(b.initial, equity, b.cash, retained);
+  const equity = unknown ? null : b.cash + retained.reduce((n, p) => n + p.markedValueEth!, 0);
+  if (equity !== null && equity <= b.initial * (1 - R.portfolioLossFraction)) b.state.halted = true;
+  const signals: EntrySignal[] = [];
   let waitReason = b.state.halted
     ? "Portfolio risk stop latched"
     : !monitoring
       ? "Continuous block monitoring unavailable"
       : unknown
         ? "Open position valuation unknown"
-        : budget <= 0
-          ? "No available position budget"
-          : "No security-approved, cost-covered momentum signal";
-  if (
-    !b.state.halted &&
-    monitoring &&
-    !unknown &&
-    retained.length < PAPER_RISK.maxPositions &&
-    b.state.trades.length < POLICY.maxTradesPerDay
-  ) {
-    const candidates = fresh
-      .flatMap((p) => {
-        if (
-          !approved(p, now) ||
-          !p.token ||
-          !p.factoryVerified ||
-          !p.roundTripOk ||
-          p.metadataFresh !== true ||
-          p.tvlUsd < POLICY.minTvlUsd ||
-          !Number.isFinite(p.tvlUsd)
-        )
-          return [];
-        if (
-          retained.some((h) => h.token === p.token) ||
-          now - (b.tokenCooldowns![p.token] ?? -Infinity) < POLICY.cooldownMs
-        )
-          return [];
-        if (retained.some((h) => h.actors.some((a) => p.security!.actors.includes(a)))) return [];
-        const input = p.buyInputEth,
-          gas = p.buyGasEth,
-          q = p.entryExitQuote;
-        if (
-          input === undefined ||
-          gas === undefined ||
-          !p.quantityRaw ||
-          !/^\d+$/.test(p.quantityRaw) ||
-          BigInt(p.quantityRaw) <= 0n ||
-          !q ||
-          q.pool !== p.id ||
-          q.quantityRaw !== p.quantityRaw ||
-          !/^\d+$/.test(q.block) ||
-          q.block !== p.block ||
-          q.fetchedAt > now ||
-          now - q.fetchedAt > 10000 ||
-          !Number.isFinite(q.receivedEth) ||
-          q.receivedEth < 0 ||
-          !Number.isFinite(q.gasEth) ||
-          q.gasEth < 0
-        )
-          return [];
-        const reserve = budget - input - gas;
-        if (
-          !Number.isFinite(input) ||
-          !Number.isFinite(gas) ||
-          input <= 0 ||
-          gas < 0 ||
-          reserve < q.gasEth ||
-          budget > b.cash
-        )
-          return [];
-        // Do not open a position that already crosses its loss trigger when its
-        // actual quantity is sold into the unchanged pool, including both gas legs.
-        if (q.receivedEth + reserve - q.gasEth < budget * (1 - LAUNCH_POLICY.stopLoss)) return [];
-        const h = history.filter((x) => x.id === p.id);
-        if (h.length < 3 || now - h[0].at < LAUNCH_POLICY.confirmMs) return [];
-        const rise = p.priceEth / h[0].price - 1,
-          totalCost = Math.max(0, input - q.receivedEth) + gas + q.gasEth;
-        if (
-          rise < Math.max(LAUNCH_POLICY.minRise, (2 * totalCost) / budget) ||
-          p.priceEth < Math.max(...h.map((x) => x.price)) * (1 - LAUNCH_POLICY.maxDrawdown)
-        )
-          return [];
-        return [{ p, score: rise - (2 * totalCost) / budget, reserve }];
-      })
-      .sort((a, b) => b.score - a.score);
-    const seen = new Set<string>();
-    for (const { p, reserve } of candidates) {
+        : "No cost-covered trend; see per-pool entry signals";
+  const limits =
+    b.state.trades.length >= R.maxTradesPerDay ||
+    b.state.trades.filter((t) => now - t < 3600000).length >= R.maxTradesPerHour;
+  if (limits) waitReason = "Paper entry rate limit: six per hour or 24 per day";
+  if (!b.state.halted && monitoring && !unknown && !limits) {
+    const screenBudget = Math.min(b.initial, equity!) * PAPER_RISK.positionFraction;
+    const ready: { p: MarketPoint; signal: EntrySignal }[] = [],
+      seen = new Set<string>();
+    for (const p of fresh) {
+      if (retained.some((h) => h.token === p.token)) continue;
+      let s = entrySignal(p, b.prices, screenBudget, now);
+      if (retained.some((h) => h.actors.some((a) => p.security?.actors.includes(a))))
+        s = {
+          pool: p.id,
+          status: "blocked",
+          reason: "Token shares an issuer or major holder with an open position",
+        };
+      if (
+        now - (b.tokenCooldowns![p.token!] ?? -Infinity) < R.cooldownMs ||
+        now - (b.lossCooldowns![p.token!] ?? -Infinity) < R.lossCooldownMs
+      )
+        s = {
+          pool: p.id,
+          status: "blocked",
+          reason: "Per-token cooldown after a close or price stop",
+        };
+      signals.push(s);
+      if (s.status !== "confirming") continue;
       seen.add(p.id);
       let c = b.challenges![p.id];
-      if (!c || now - c.lastAt > POLICY.maxDataAgeMs)
-        c = { since: now, lastAt: 0, observations: 0 };
+      if (!c || now - c.lastAt > 30000) c = { since: now, lastAt: 0, observations: 0 };
       if (now - c.lastAt >= POLICY.riskIntervalMs)
         c = { ...c, lastAt: now, observations: c.observations + 1 };
       b.challenges![p.id] = c;
-      waitReason = "Confirming independent position signals";
-      if (c.observations < POLICY.minObservations || now - c.since < LAUNCH_POLICY.confirmMs)
-        continue;
+      if (c.observations >= R.minObservations && now - c.since >= R.confirmMs) {
+        s.status = "ready";
+        s.reason = "Security, exact sale and 90-second cost-covered trend confirmed";
+        ready.push({ p, signal: s });
+      }
+    }
+    for (const id of Object.keys(b.challenges!)) if (!seen.has(id)) delete b.challenges![id];
+    ready.sort((a, c) => c.signal.score! - a.signal.score!);
+    for (const { p, signal } of ready) {
       if (
-        b.positions.length >= PAPER_RISK.maxPositions ||
-        b.state.trades.length >= POLICY.maxTradesPerDay
+        b.state.trades.length >= R.maxTradesPerDay ||
+        b.state.trades.filter((t) => now - t < 3600000).length >= R.maxTradesPerHour
       )
         break;
       if (
@@ -326,16 +289,62 @@ export function stepGuardedBook(
         )
       )
         continue;
-      const committed = b.positions.reduce((n, h) => n + h.allocationEth, 0);
-      if (
-        committed + budget >
-          Math.min(b.initial, equity!) * PAPER_RISK.maxCommittedFraction + 1e-12 ||
-        budget > b.cash
-      )
+      let rotating = false;
+      if (b.positions.length >= PAPER_RISK.maxPositions) {
+        const choices: { pos: GuardedPosition; q: ExitQuote; improvement: number }[] = b.positions
+          .flatMap((pos) => {
+            const q = quoteFor(context.exitQuotes ?? [], pos, now),
+              m = observedMomentum(b.prices!, pos.pool, now);
+            if (
+              now - pos.entryAt < R.minHoldMs ||
+              pos.exitRequested ||
+              !q ||
+              !m ||
+              q.gasEth > pos.exitReserveEth ||
+              pos.markedValueEth === null
+            )
+              return [];
+            const improvement = signal.score! - Math.max(0, m.rise);
+            const switching =
+              R.rotationMargin +
+              // The candidate score already subtracts its two-leg costs. Do
+              // not charge the same target costs again during comparison.
+              (R.costMargin * q.gasEth) / pos.allocationEth;
+            const remaining = b.positions!.filter((x) => x.id !== pos.id);
+            const nextBudget = positionBudget(
+              b.initial,
+              equity,
+              b.cash + pos.markedValueEth,
+              remaining,
+            );
+            if (improvement <= switching || !fillBudget(p, nextBudget, now)) return [];
+            return [{ pos, q, improvement }];
+          })
+          .sort((a, c) => c.improvement - a.improvement);
+        const replacement = choices[0];
+        if (!replacement) {
+          signal.reason =
+            "Slots occupied; new trend does not exceed holding advantage plus switching costs";
+          continue;
+        }
+        settle(
+          replacement.pos,
+          replacement.pos.markedValueEth!,
+          replacement.q.gasEth,
+          `Rotate to stronger cost-covered trend: ${p.label}`,
+        );
+        b.positions = b.positions.filter((x) => x.id !== replacement.pos.id);
+        rotating = true;
+      }
+      const budget = positionBudget(b.initial, equity, b.cash, b.positions),
+        fill = fillBudget(p, budget, now);
+      if (!fill || budget > b.cash) {
+        signal.reason =
+          "Actual remaining allocation cannot fund this measured fill and exit reserve";
         continue;
-      const id = `${b.initial}:${now}:${p.id}`,
-        net = Math.max(0, p.entryExitQuote!.receivedEth + reserve - p.entryExitQuote!.gasEth);
-      const position: GuardedPosition = {
+      }
+      const id = `${b.initial}:${now}:${p.id}`;
+      const pos: GuardedPosition = {
         id,
         pool: p.id,
         token: p.token!,
@@ -344,19 +353,20 @@ export function stepGuardedBook(
         allocationEth: budget,
         inputEth: p.buyInputEth!,
         entryGasEth: p.buyGasEth!,
-        exitReserveEth: reserve,
+        exitReserveEth: fill.reserve,
         entryAt: now,
         entryBlock: p.entryExitQuote!.block,
-        entryDepthEth: p.reserveEth ?? 0,
+        entryDepthEth: p.reserveEth!,
         highWaterEth: budget,
-        markedValueEth: net,
+        markedValueEth: fill.net,
         actors: [...p.security!.actors],
         lastQuoteAt: p.entryExitQuote!.fetchedAt,
       };
-      b.positions.push(position);
+      b.positions.push(pos);
       b.cash -= budget;
       b.costs += p.buyGasEth!;
       b.state.trades.push(now);
+      b.state.lastTradeAt = now;
       delete b.challenges![p.id];
       b.ledger!.push({
         id,
@@ -366,26 +376,31 @@ export function stepGuardedBook(
         entryAt: new Date(now).toISOString(),
         exitAt: null,
         entryValueEth: budget,
-        valueEth: net,
+        valueEth: fill.net,
         durationSec: 0,
         feesEth: 0,
         costsEth: p.buyGasEth!,
-        pnlEth: net - budget,
+        pnlEth: fill.net - budget,
         exitReason: null,
         feeBaseline: 0,
         quantityRaw: p.quantityRaw!,
       });
+      signal.reason = rotating
+        ? "Opened after a measured, cost-covered rotation"
+        : "Opened a confirmed independent 2% position";
       events.push({
         action: "enter",
-        reason: "Independent 2% position: security, exact sale and momentum confirmed",
+        reason: signal.reason,
         target: p,
         pool: p.id,
         chargedEth: p.buyGasEth!,
       });
     }
-    for (const id of Object.keys(b.challenges!)) if (!seen.has(id)) delete b.challenges![id];
+    if (!events.length && signals.length)
+      waitReason =
+        signals.find((s) => s.status === "ready" || s.status === "confirming")?.reason ??
+        signals[0].reason;
   } else b.challenges = {};
-  if (!monitoring) b.challenges = {};
   b.value = b.positions.some((p) => p.markedValueEth === null)
     ? null
     : b.cash + b.positions.reduce((n, p) => n + p.markedValueEth!, 0);
@@ -399,5 +414,11 @@ export function stepGuardedBook(
       target: last?.target,
       state: b.state,
     };
-  return { book: b, decision, events, charged: events.reduce((n, e) => n + e.chargedEth, 0) };
+  return {
+    book: b,
+    decision,
+    events,
+    signals,
+    charged: events.reduce((n, e) => n + e.chargedEth, 0),
+  };
 }

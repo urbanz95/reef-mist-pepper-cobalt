@@ -54,6 +54,7 @@ export type LiveBook = {
   positions?: GuardedPosition[];
   challenges?: Record<string, { since: number; lastAt: number; observations: number }>;
   tokenCooldowns?: Record<string, number>;
+  lossCooldowns?: Record<string, number>;
   prices?: { id: string; at: number; price: number }[];
   enteredAt?: number;
   entryAccountValue?: number;
@@ -77,7 +78,13 @@ export function newLiveBook(
     strategy,
     prices: [],
     ...(strategy === "guarded"
-      ? { portfolioVersion: 2 as const, positions: [], challenges: {}, tokenCooldowns: {} }
+      ? {
+          portfolioVersion: 2 as const,
+          positions: [],
+          challenges: {},
+          tokenCooldowns: {},
+          lossCooldowns: {},
+        }
       : {}),
   };
 }

@@ -16,6 +16,22 @@ export const paperReportSchema = z.object({
   version: z.literal(1),
   executionProfile: z.literal("pons-v2").optional(),
   securityProfile: z.literal("single-token-v1").optional(),
+  strategyProfile: z.literal("rotation-v1").optional(),
+  strategyPolicy: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
+  entrySignals: z
+    .array(
+      z.object({
+        capital: amount,
+        pool: z.string(),
+        status: z.enum(["blocked", "warming", "confirming", "ready"]),
+        reason: z.string(),
+        score: amount.optional(),
+        rise: amount.optional(),
+        requiredRise: amount.optional(),
+        costFraction: amount.optional(),
+      }),
+    )
+    .optional(),
   runId: z.string().regex(/^\d+$/),
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -147,6 +163,22 @@ export const paperReportSchema = z.object({
         securityStatus: z.enum(["approved", "rejected", "unknown"]).optional(),
         securityReasons: z.array(z.string()).optional(),
         securityCheckedAt: z.number().optional(),
+        securityApprovedCount: z.number().optional(),
+        tokenEvidence: z
+          .object({
+            kind: z.literal("pinned-pons-ownerless-erc20"),
+            block: z.string(),
+            token: z.string(),
+            runtimeHash: z.string(),
+            templateHash: z.string(),
+            issuer: z.string(),
+            issuerFraction: amount,
+            issuerOverLimit: z.boolean(),
+            owner: z.string(),
+            fullBalanceTransfers: z.boolean(),
+          })
+          .nullable()
+          .optional(),
         entryBlockReason: z.string().nullable().optional(),
         securityData: z
           .object({
