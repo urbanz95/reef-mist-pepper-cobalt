@@ -1,7 +1,6 @@
 name: Live-market paper test
 on:
-  schedule:
-    - cron: "17 0 * * *"
+  # Daily long-running market paper tests paused; manual runs remain possible.
   workflow_dispatch:
     inputs:
       duration_minutes:
